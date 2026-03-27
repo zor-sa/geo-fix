@@ -11,356 +11,46 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
-
       - name: Run unit tests
-        run: python -m pytest test/ -v --tb=short
+        run: python -m pytest test/test_presets.py test/test_proxy_addon.py test/test_system_config.py test/test_health_check.py test/test_main.py -v --tb=short
 
-  integration-test:
+  integration-tests:
     runs-on: windows-latest
     needs: unit-tests
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest playwright
-          python -m playwright install chromium
+          pip install pytest
+      - name: Run integration tests
+        run: python -m pytest test/test_integration_windows.py -v --tb=short -x
 
-      - name: Test proxy starts and injects JS
-        shell: powershell
-        run: |
-          # Start mitmproxy with our addon in background
-          $env:PYTHONPATH = "."
-          $job = Start-Job -ScriptBlock {
-            Set-Location $using:PWD
-            $env:PYTHONPATH = "."
-            python -c @"
-          import asyncio
-          from mitmproxy.options import Options
-          from mitmproxy.tools.dump import DumpMaster
-          from src.proxy_addon import GeoFixAddon
-          from src.presets import PRESETS
-
-          async def run():
-              opts = Options(listen_host='127.0.0.1', listen_port=8080)
-              master = DumpMaster(opts)
-              addon = GeoFixAddon(PRESETS['US'])
-              master.addons.add(addon)
-              await master.run()
-
-          asyncio.run(run())
-          "@
-          }
-
-          # Wait for proxy to start
-          Start-Sleep -Seconds 5
-
-          # Test that proxy is listening
-          $tcp = New-Object System.Net.Sockets.TcpClient
-          try {
-            $tcp.Connect("127.0.0.1", 8080)
-            Write-Host "✓ Proxy is listening on port 8080"
-            $tcp.Close()
-          } catch {
-            Write-Host "✗ Proxy is NOT listening"
-            exit 1
-          }
-
-          # Test via curl through proxy (HTTP only, no cert needed)
-          $response = curl.exe -s -x http://127.0.0.1:8080 -H "Accept-Language: ru-RU" http://httpbin.org/headers 2>$null
-          if ($response -match "en-US") {
-            Write-Host "✓ Accept-Language header rewritten to en-US"
-          } else {
-            Write-Host "✗ Accept-Language NOT rewritten"
-            Write-Host "Response: $response"
-          }
-
-          # Cleanup
-          Stop-Job $job -PassThru | Remove-Job -Force
-
-      - name: Test registry proxy configuration
-        shell: powershell
-        run: |
-          python -c @"
-          import sys
-          sys.path.insert(0, '.')
-          from src.system_config import set_wininet_proxy, unset_wininet_proxy, PROXY_ADDR
-          import winreg
-
-          # Set proxy
-          original = set_wininet_proxy()
-          print(f'Original proxy: {original}')
-
-          # Verify it's set
-          key_path = r'Software\Microsoft\Windows\CurrentVersion\Internet Settings'
-          with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
-              enable = winreg.QueryValueEx(key, 'ProxyEnable')[0]
-              server = winreg.QueryValueEx(key, 'ProxyServer')[0]
-              assert enable == 1, f'ProxyEnable should be 1, got {enable}'
-              assert server == PROXY_ADDR, f'ProxyServer should be {PROXY_ADDR}, got {server}'
-              print(f'✓ Proxy set to {server}')
-
-          # Unset proxy
-          unset_wininet_proxy(original)
-
-          # Verify it's unset
-          with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
-              enable = winreg.QueryValueEx(key, 'ProxyEnable')[0]
-              assert enable == original.get('ProxyEnable', 0), f'ProxyEnable not restored'
-              print('✓ Proxy restored to original')
-          "@
-
-      - name: Test CA certificate install/uninstall
-        shell: powershell
-        run: |
-          # First generate the CA cert by running mitmproxy briefly
-          python -c @"
-          import asyncio, os
-          from mitmproxy.options import Options
-          from mitmproxy.tools.dump import DumpMaster
-
-          async def run():
-              opts = Options(listen_host='127.0.0.1', listen_port=18080)
-              master = DumpMaster(opts)
-              # Just starting generates the cert
-              await asyncio.sleep(1)
-              master.shutdown()
-
-          try:
-              asyncio.run(run())
-          except:
-              pass  # shutdown may raise
-          "@
-
-          # Check cert was generated
-          $certPath = "$env:USERPROFILE\.mitmproxy\mitmproxy-ca-cert.pem"
-          if (Test-Path $certPath) {
-            Write-Host "✓ CA cert generated at $certPath"
-          } else {
-            Write-Host "✗ CA cert not found"
-            exit 1
-          }
-
-          # Test install
-          python -c @"
-          import sys
-          sys.path.insert(0, '.')
-          from src.system_config import install_ca_cert, uninstall_ca_cert
-
-          result = install_ca_cert()
-          print(f'Install result: {result}')
-          assert result, 'CA cert install failed'
-          print('✓ CA cert installed to CurrentUser store')
-
-          uninstall_ca_cert()
-          print('✓ CA cert removed from CurrentUser store')
-          "@
-
-      - name: Test single-instance guard
-        shell: powershell
-        run: |
-          python -c @"
-          import sys, os, tempfile
-          sys.path.insert(0, '.')
-          from pathlib import Path
-          import src.health_check as hc
-
-          # Use temp dir for PID file
-          tmp = Path(tempfile.mkdtemp())
-          hc.PID_FILE = tmp / '.geo-fix.pid'
-
-          # First acquire should succeed
-          assert hc.acquire_instance_lock(), 'First acquire failed'
-          print('✓ First instance lock acquired')
-
-          # Second acquire should fail (same PID)
-          assert not hc.acquire_instance_lock(), 'Second acquire should fail'
-          print('✓ Second instance correctly blocked')
-
-          # Release
-          hc.release_instance_lock()
-          assert not hc.PID_FILE.exists(), 'PID file not cleaned up'
-          print('✓ Instance lock released')
-          "@
-
-      - name: Test state file crash recovery
-        shell: powershell
-        run: |
-          python -c @"
-          import sys, tempfile, json
-          sys.path.insert(0, '.')
-          from pathlib import Path
-          import src.system_config as sc
-
-          # Use temp dir
-          tmp = Path(tempfile.mkdtemp())
-          sc.STATE_FILE = tmp / 'state.json'
-
-          # Simulate: save state, then 'crash' (don't cleanup)
-          state = sc.ProxyState(
-              pid=99999,  # non-existent PID
-              preset_code='US',
-              timestamp='2026-03-27T12:00:00',
-              original_proxy_enable=0,
-              original_proxy_server='',
-              original_proxy_override='',
-          )
-          sc.save_state(state)
-          assert sc.STATE_FILE.exists(), 'State file not created'
-          print('✓ State file saved')
-
-          # Load and verify
-          loaded = sc.load_state()
-          assert loaded is not None, 'Failed to load state'
-          assert loaded.pid == 99999
-          assert loaded.preset_code == 'US'
-          print('✓ State file loaded correctly')
-
-          # Test schema validation rejects unknown fields
-          bad = json.loads(state.to_json())
-          bad['evil_field'] = 'hack'
-          sc.STATE_FILE.write_text(json.dumps(bad))
-          loaded = sc.load_state()
-          assert loaded is None, 'Should reject unknown fields'
-          print('✓ Unknown fields correctly rejected')
-
-          # Cleanup
-          sc.delete_state()
-          print('✓ State file deleted')
-          "@
-
-  e2e-browser-test:
+  e2e-browser-tests:
     runs-on: windows-latest
-    needs: integration-test
+    needs: integration-tests
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest playwright
           python -m playwright install chromium
-
-      - name: E2E — Verify JS injection in real browser
-        shell: powershell
-        timeout-minutes: 5
-        run: |
-          python -c @"
-          import asyncio, threading, time, sys
-          sys.path.insert(0, '.')
-
-          from mitmproxy.options import Options
-          from mitmproxy.tools.dump import DumpMaster
-          from src.proxy_addon import GeoFixAddon
-          from src.presets import PRESETS
-
-          # Start proxy in background thread
-          def run_proxy():
-              loop = asyncio.new_event_loop()
-              asyncio.set_event_loop(loop)
-              opts = Options(listen_host='127.0.0.1', listen_port=8080)
-              master = DumpMaster(opts)
-              addon = GeoFixAddon(PRESETS['US'])
-              master.addons.add(addon)
-              loop.run_until_complete(master.run())
-
-          proxy_thread = threading.Thread(target=run_proxy, daemon=True)
-          proxy_thread.start()
-          time.sleep(3)
-
-          # Now test with Playwright
-          from playwright.sync_api import sync_playwright
-
-          with sync_playwright() as p:
-              browser = p.chromium.launch(
-                  proxy={'server': 'http://127.0.0.1:8080'},
-                  args=['--ignore-certificate-errors']
-              )
-              page = browser.new_page()
-
-              # Navigate to a simple test page
-              page.goto('http://example.com')
-
-              # Check timezone override
-              tz = page.evaluate('Intl.DateTimeFormat().resolvedOptions().timeZone')
-              print(f'Timezone: {tz}')
-              assert tz == 'America/New_York', f'Expected America/New_York, got {tz}'
-              print('✓ Timezone correctly spoofed to America/New_York')
-
-              # Check language override
-              lang = page.evaluate('navigator.language')
-              print(f'Language: {lang}')
-              assert lang == 'en-US', f'Expected en-US, got {lang}'
-              print('✓ Language correctly spoofed to en-US')
-
-              # Check languages array
-              langs = page.evaluate('Array.from(navigator.languages)')
-              print(f'Languages: {langs}')
-              assert 'en-US' in langs, f'en-US not in languages: {langs}'
-              print('✓ Languages array contains en-US')
-
-              # Check geolocation (async)
-              coords = page.evaluate('''() => new Promise((resolve, reject) => {
-                  navigator.geolocation.getCurrentPosition(
-                      pos => resolve({lat: pos.coords.latitude, lon: pos.coords.longitude}),
-                      err => reject(err.message),
-                      {timeout: 5000}
-                  )
-              })''')
-              print(f'Geolocation: {coords}')
-              assert abs(coords['lat'] - 38.8951) < 0.01, f'Latitude wrong: {coords}'
-              assert abs(coords['lon'] - (-77.0364)) < 0.01, f'Longitude wrong: {coords}'
-              print('✓ Geolocation correctly spoofed to Washington DC')
-
-              # Check getTimezoneOffset
-              offset = page.evaluate('new Date().getTimezoneOffset()')
-              print(f'TimezoneOffset: {offset}')
-              # US Eastern: 300 (EST) or 240 (EDT)
-              assert offset in [240, 300], f'Unexpected offset: {offset}'
-              print(f'✓ getTimezoneOffset returns {offset} (valid for US Eastern)')
-
-              # Check WebRTC blocked
-              webrtc_result = page.evaluate('''() => {
-                  try {
-                      const pc = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
-                      // If STUN servers were filtered, iceServers should be empty
-                      return pc.getConfiguration().iceServers.length;
-                  } catch(e) {
-                      return 'error: ' + e.message;
-                  }
-              }''')
-              print(f'WebRTC iceServers count: {webrtc_result}')
-              assert webrtc_result == 0, f'STUN servers not filtered: {webrtc_result}'
-              print('✓ WebRTC STUN servers correctly filtered')
-
-              browser.close()
-
-          print()
-          print('═══════════════════════════════════════')
-          print('  ALL E2E BROWSER TESTS PASSED ✓')
-          print('═══════════════════════════════════════')
-          "@
+      - name: Run E2E browser tests
+        run: python -m pytest test/test_e2e_browser.py -v --tb=short -x
