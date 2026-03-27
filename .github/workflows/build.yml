@@ -1,0 +1,86 @@
+name: Build Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build exe
+        run: |
+          pyinstaller --onedir --name geo-fix --noconfirm --clean --add-data "src/inject.js;src" --hidden-import mitmproxy.addons --hidden-import mitmproxy.tools.dump --hidden-import pystray._win32 src/main.py
+
+      - name: Copy install.bat and README
+        run: |
+          copy install.bat dist\geo-fix\
+          copy README.md dist\geo-fix\
+
+      - name: Create desktop shortcut scripts
+        shell: powershell
+        run: |
+          $distDir = "dist\geo-fix"
+
+          # Create .bat launchers for shortcuts
+          @("US", "DE", "NL", "GB") | ForEach-Object {
+            $content = "@echo off`r`nstart """" ""%~dp0geo-fix.exe"" $_"
+            Set-Content -Path "$distDir\Включить ($_).bat" -Value $content -Encoding UTF8
+          }
+
+          $stopContent = "@echo off`r`nstart """" ""%~dp0geo-fix.exe"" --stop"
+          Set-Content -Path "$distDir\Выключить.bat" -Value $stopContent -Encoding UTF8
+
+          $cleanupContent = "@echo off`r`nstart """" ""%~dp0geo-fix.exe"" --cleanup"
+          Set-Content -Path "$distDir\Починить интернет.bat" -Value $cleanupContent -Encoding UTF8
+
+      - name: Run tests
+        run: |
+          pip install pytest
+          python -m pytest test/ -v
+
+      - name: Create zip archive
+        shell: powershell
+        run: |
+          Compress-Archive -Path "dist\geo-fix\*" -DestinationPath "dist\geo-fix-windows.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: geo-fix-windows
+          path: dist/geo-fix-windows.zip
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/geo-fix-windows.zip
+          body: |
+            ## geo-fix ${{ github.ref_name }}
+
+            ### Установка
+            1. Скачайте `geo-fix-windows.zip`
+            2. Распакуйте в любую папку (например, `C:\geo-fix\`)
+            3. Запустите `Включить (US).bat`
+            4. При первом запуске откроется мастер настройки
+
+            ### Требуется
+            - Windows 10/11
+            - VPN (должен быть включён перед запуском)
+          draft: false
+          prerelease: false

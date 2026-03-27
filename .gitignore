@@ -9,4 +9,3 @@ build/*.spec
 *.key
 credentials.json
 secrets/
-.github/
