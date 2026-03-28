@@ -367,8 +367,13 @@ def delete_session_tmpdir(session_tmpdir: Optional[str]) -> None:
     if session_tmpdir is None:
         return
     if Path(session_tmpdir).exists():
-        shutil.rmtree(session_tmpdir, ignore_errors=True)
-        logger.info("Deleted session tmpdir: %s", session_tmpdir)
+        def _on_error(func, path, exc_info):
+            logger.warning("Failed to delete %s: %s", path, exc_info[1])
+        shutil.rmtree(session_tmpdir, onerror=_on_error)
+        if Path(session_tmpdir).exists():
+            logger.warning("Session tmpdir not fully deleted: %s — CA key may remain on disk", session_tmpdir)
+        else:
+            logger.info("Deleted session tmpdir: %s", session_tmpdir)
 
 
 # === CA Certificate ===

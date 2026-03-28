@@ -13,6 +13,7 @@ import atexit
 import datetime
 import logging
 import os
+from pathlib import Path
 import secrets
 import signal
 import socket
@@ -169,8 +170,8 @@ def _remove_onlogon_task() -> None:
             ["schtasks", "/delete", "/tn", "geo-fix-cleanup", "/f"],
             capture_output=True, timeout=10
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Could not remove ONLOGON task: %s", e)
 
 
 def _handle_stop():
@@ -218,17 +219,17 @@ def _do_cleanup():
             return
         _cleanup_done = True
 
-    logger.info("Performing cleanup...")
-    try:
-        # Signal watchdog to stop BEFORE cleanup deletes tmpdir
-        _signal_watchdog_stop(_session_tmpdir, _stop_token)
-        state = load_state()
-        if state:
-            cleanup(state)
-        _remove_onlogon_task()
-        release_instance_lock()
-    except Exception as e:
-        logger.error("Cleanup error: %s", e)
+        logger.info("Performing cleanup...")
+        try:
+            # Signal watchdog to stop BEFORE cleanup deletes tmpdir
+            _signal_watchdog_stop(_session_tmpdir, _stop_token)
+            state = load_state()
+            if state:
+                cleanup(state)
+            _remove_onlogon_task()
+            release_instance_lock()
+        except Exception as e:
+            logger.error("Cleanup error: %s", e)
 
 
 def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None, port: int = PROXY_PORT) -> threading.Thread:
