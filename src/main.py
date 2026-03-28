@@ -17,6 +17,7 @@ import signal
 import sys
 import threading
 import time
+import uuid
 
 # Add project root to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,7 +35,9 @@ from src.system_config import (
     PROXY_PORT,
     ProxyState,
     cleanup,
+    create_session_tmpdir,
     delete_state,
+    install_ca_cert,
     load_state,
     save_state,
     set_firefox_proxy,
@@ -145,13 +148,16 @@ def _do_cleanup():
         logger.error("Cleanup error: %s", e)
 
 
-def _start_mitmproxy(addon: GeoFixAddon) -> threading.Thread:
+def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None) -> threading.Thread:
     """Start mitmproxy in a background thread."""
     from mitmproxy.options import Options
     from mitmproxy.tools.dump import DumpMaster
 
     def run_proxy():
-        opts = Options(listen_host=PROXY_HOST, listen_port=PROXY_PORT)
+        kwargs = dict(listen_host=PROXY_HOST, listen_port=PROXY_PORT)
+        if confdir:
+            kwargs["confdir"] = confdir
+        opts = Options(**kwargs)
         master = DumpMaster(opts)
         master.addons.add(addon)
 
@@ -235,11 +241,24 @@ def main():
     else:
         firewall_created = False
 
+    # Create per-session tmpdir for ephemeral CA
+    session_id = str(uuid.uuid4())
+    session_tmpdir = create_session_tmpdir()
+
     # Save original proxy settings
     original_proxy = set_wininet_proxy()
     firefox_backup = set_firefox_proxy()
 
-    # Save state for crash recovery
+    # Create proxy addon
+    addon = GeoFixAddon(preset)
+
+    # Start mitmproxy with per-session confdir (generates new CA)
+    proxy_thread = _start_mitmproxy(addon, confdir=session_tmpdir)
+
+    # Install CA cert after mitmproxy generates it, capture thumbprint
+    ca_thumbprint = install_ca_cert(session_tmpdir)
+
+    # Save state for crash recovery (includes session fields for cleanup)
     state = ProxyState(
         pid=os.getpid(),
         preset_code=country_code,
@@ -250,14 +269,11 @@ def main():
         firefox_prefs_modified=firefox_backup is not None,
         firefox_prefs_backup=firefox_backup,
         firewall_rules_created=firewall_created,
+        session_id=session_id,
+        session_tmpdir=session_tmpdir,
+        ca_thumbprint=ca_thumbprint,
     )
     save_state(state)
-
-    # Create proxy addon
-    addon = GeoFixAddon(preset)
-
-    # Start mitmproxy
-    proxy_thread = _start_mitmproxy(addon)
 
     # Country switch callback for tray
     def on_switch_country(code: str):

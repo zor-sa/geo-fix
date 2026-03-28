@@ -7,6 +7,8 @@ optional firewall rules, and atomic state file for crash recovery.
 import json
 import logging
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -50,6 +52,9 @@ class ProxyState:
     firewall_rules_created: bool = False
     firefox_prefs_modified: bool = False
     firefox_prefs_backup: Optional[str] = None
+    session_id: Optional[str] = None
+    session_tmpdir: Optional[str] = None
+    ca_thumbprint: Optional[str] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
@@ -249,70 +254,93 @@ def unset_firefox_proxy(backup_path: Optional[str] = None) -> None:
             logger.info("Firefox user.js removed (was created by geo-fix)")
 
 
-# === CA Certificate ===
+# === Session Tmpdir ===
 
-def install_ca_cert() -> bool:
-    """Install mitmproxy CA cert to Windows CurrentUser store. No admin needed."""
-    if not MITMPROXY_CA_CERT.exists():
-        logger.error("CA cert not found at %s. Run mitmproxy once to generate it.", MITMPROXY_CA_CERT)
-        return False
-
-    if sys.platform != "win32":
-        logger.warning("Not on Windows — skipping cert installation")
-        return True
-
-    try:
-        result = subprocess.run(
-            ["certutil", "-addstore", "-user", "Root", str(MITMPROXY_CA_CERT)],
-            capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0:
-            logger.info("CA cert installed to CurrentUser store")
-            _restrict_ca_key_permissions()
-            return True
-        else:
-            logger.error("certutil failed: %s", result.stderr)
-            return False
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        logger.error("Failed to install CA cert: %s", e)
-        return False
-
-
-def uninstall_ca_cert() -> None:
-    """Remove mitmproxy CA cert from Windows CurrentUser store."""
-    if sys.platform != "win32":
-        return
-
-    try:
-        subprocess.run(
-            ["certutil", "-delstore", "-user", "Root", "mitmproxy"],
-            capture_output=True, text=True, timeout=30
-        )
-        logger.info("CA cert removed from CurrentUser store")
-    except Exception as e:
-        logger.warning("Failed to remove CA cert: %s", e)
-
-
-def _restrict_ca_key_permissions() -> None:
-    """Restrict CA key file permissions to current user only."""
-    key_file = MITMPROXY_CA_DIR / "mitmproxy-ca.pem"
-    if not key_file.exists():
-        return
-
+def create_session_tmpdir() -> str:
+    """Create a per-session temp directory for mitmproxy CA with restricted ACL."""
+    tmpdir = tempfile.mkdtemp(prefix="geo-fix-")
     if sys.platform == "win32":
         try:
             username = os.environ.get("USERNAME", "")
             if username:
                 subprocess.run(
-                    ["icacls", str(key_file), "/inheritance:r",
-                     "/grant:r", f"{username}:(R)"],
+                    ["icacls", tmpdir, "/inheritance:r",
+                     "/grant:r", f"{username}:(OI)(CI)F"],
                     capture_output=True, timeout=10
                 )
-                logger.info("CA key permissions restricted to %s", username)
+                logger.info("Session tmpdir ACL restricted to %s", username)
         except Exception as e:
-            logger.warning("Could not restrict CA key permissions: %s", e)
+            logger.warning("Could not restrict session tmpdir ACL: %s", e)
     else:
-        os.chmod(key_file, 0o600)
+        os.chmod(tmpdir, 0o700)
+    logger.info("Created session tmpdir: %s", tmpdir)
+    return tmpdir
+
+
+def delete_session_tmpdir(session_tmpdir: Optional[str]) -> None:
+    """Delete the per-session temp directory containing CA private key."""
+    if session_tmpdir is None:
+        return
+    if Path(session_tmpdir).exists():
+        shutil.rmtree(session_tmpdir, ignore_errors=True)
+        logger.info("Deleted session tmpdir: %s", session_tmpdir)
+
+
+# === CA Certificate ===
+
+def _parse_thumbprint(certutil_output: str) -> Optional[str]:
+    """Extract SHA-1 thumbprint from certutil -dump output."""
+    match = re.search(r"Cert Hash\(sha1\):\s*([0-9a-fA-F ]+)", certutil_output)
+    if match:
+        return match.group(1).replace(" ", "").lower()
+    return None
+
+
+def install_ca_cert(confdir: str) -> Optional[str]:
+    """Install mitmproxy CA cert to Windows CurrentUser store. Returns thumbprint or None."""
+    cert_path = Path(confdir) / "mitmproxy-ca-cert.pem"
+    if not cert_path.exists():
+        logger.error("CA cert not found at %s. Start mitmproxy first to generate it.", cert_path)
+        return None
+
+    try:
+        result = subprocess.run(
+            ["certutil", "-addstore", "-user", "Root", str(cert_path)],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode != 0:
+            logger.error("certutil -addstore failed: %s", result.stderr)
+            return None
+
+        logger.info("CA cert installed to CurrentUser store")
+
+        # Extract thumbprint via certutil -dump
+        dump_result = subprocess.run(
+            ["certutil", "-dump", str(cert_path)],
+            capture_output=True, text=True, timeout=30
+        )
+        thumbprint = _parse_thumbprint(dump_result.stdout)
+        if thumbprint:
+            logger.info("CA thumbprint: %s", thumbprint)
+        else:
+            logger.warning("Could not extract CA thumbprint from certutil output")
+        return thumbprint
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logger.error("Failed to install CA cert: %s", e)
+        return None
+
+
+def uninstall_ca_cert(thumbprint: Optional[str] = None) -> None:
+    """Remove mitmproxy CA cert from Windows CurrentUser store."""
+    identifier = thumbprint if thumbprint else "mitmproxy"
+    try:
+        subprocess.run(
+            ["certutil", "-delstore", "-user", "Root", identifier],
+            capture_output=True, text=True, timeout=30
+        )
+        logger.info("CA cert removed from CurrentUser store (id=%s)", identifier)
+    except Exception as e:
+        logger.warning("Failed to remove CA cert: %s", e)
 
 
 # === Firewall Rules (Optional, requires admin) ===
@@ -381,6 +409,12 @@ def cleanup(state: Optional[ProxyState] = None) -> None:
         return
 
     logger.info("Running cleanup...")
+
+    # Remove CA cert BEFORE deleting state (needs thumbprint)
+    uninstall_ca_cert(state.ca_thumbprint)
+
+    # Delete session tmpdir (contains CA private key)
+    delete_session_tmpdir(state.session_tmpdir)
 
     # Restore proxy
     original = {
