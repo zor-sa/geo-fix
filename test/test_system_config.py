@@ -32,7 +32,6 @@ class TestProxyState:
     def test_defaults(self):
         state = ProxyState(pid=1, preset_code="DE", timestamp="now")
         assert state.original_proxy_enable is None
-        assert state.firewall_rules_created is False
         assert state.firefox_prefs_modified is False
 
 

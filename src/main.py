@@ -38,6 +38,7 @@ from src.system_config import (
     PROXY_PORT,
     ProxyState,
     cleanup,
+    create_firewall_rules,
     create_session_tmpdir,
     delete_state,
     install_ca_cert,
@@ -318,9 +319,7 @@ def main():
     # First-time setup
     if not is_setup_complete():
         logger.info("First run — launching setup wizard")
-        firewall_created = run_setup_wizard()
-    else:
-        firewall_created = False
+        run_setup_wizard()
 
     # Create per-session tmpdir for ephemeral CA
     global _session_tmpdir, _stop_token, _watchdog_proc
@@ -346,6 +345,9 @@ def main():
     original_proxy = set_wininet_proxy(port=port)
     firefox_backup = set_firefox_proxy(port=port)
 
+    # Create firewall rules (every session, not just wizard)
+    create_firewall_rules()
+
     state = ProxyState(
         pid=os.getpid(),
         preset_code=country_code,
@@ -355,7 +357,6 @@ def main():
         original_proxy_override=original_proxy.get("ProxyOverride"),
         firefox_prefs_modified=firefox_backup is not None,
         firefox_prefs_backup=firefox_backup,
-        firewall_rules_created=firewall_created,
         session_id=session_id,
         session_tmpdir=session_tmpdir,
         ca_thumbprint=ca_thumbprint,

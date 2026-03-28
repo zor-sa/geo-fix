@@ -42,6 +42,22 @@ STUN_PORTS = [3478, 5349, 19302, 19303, 19304, 19305]
 # Browsers for firewall rules
 BROWSER_EXES = ["chrome.exe", "msedge.exe", "firefox.exe"]
 
+# Standard browser installation paths (filesystem fallback for _find_browser_path)
+_STANDARD_BROWSER_PATHS = {
+    "chrome.exe": [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ],
+    "msedge.exe": [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ],
+    "firefox.exe": [
+        r"C:\Program Files\Mozilla Firefox\firefox.exe",
+        r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+    ],
+}
+
 
 @dataclass
 class ProxyState:
@@ -52,7 +68,6 @@ class ProxyState:
     original_proxy_enable: Optional[int] = None
     original_proxy_server: Optional[str] = None
     original_proxy_override: Optional[str] = None
-    firewall_rules_created: bool = False
     firefox_prefs_modified: bool = False
     firefox_prefs_backup: Optional[str] = None
     session_id: Optional[str] = None
@@ -415,6 +430,39 @@ def uninstall_ca_cert(thumbprint: Optional[str] = None) -> None:
 
 # === Firewall Rules (Optional, requires admin) ===
 
+def _find_browser_path(exe_name: str) -> Optional[Path]:
+    """Auto-detect browser executable path from registry or standard locations."""
+    if sys.platform != "win32":
+        return None
+
+    try:
+        import winreg
+        # Try App Paths registry (both native and WOW6432Node)
+        for root_key in [
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths",
+        ]:
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{root_key}\\{exe_name}") as key:
+                    path_str = winreg.QueryValue(key, None)
+                    if path_str:
+                        p = Path(path_str.strip('"'))
+                        if p.exists():
+                            return p
+            except FileNotFoundError:
+                continue
+    except ImportError:
+        pass
+
+    # Filesystem fallback
+    for candidate in _STANDARD_BROWSER_PATHS.get(exe_name, []):
+        p = Path(candidate)
+        if p.exists():
+            return p
+
+    return None
+
+
 def create_firewall_rules() -> bool:
     """Create firewall rules to block STUN/TURN for WebRTC. Requires admin."""
     if sys.platform != "win32":
@@ -423,6 +471,11 @@ def create_firewall_rules() -> bool:
 
     success = True
     for browser in BROWSER_EXES:
+        browser_path = _find_browser_path(browser)
+        if browser_path is None:
+            logger.warning("Browser not found, skipping firewall rule: %s", browser)
+            continue
+
         for port in STUN_PORTS:
             rule_name = f"{FW_RULE_PREFIX}-{browser.replace('.exe', '')}-udp-{port}"
             try:
@@ -431,7 +484,7 @@ def create_firewall_rules() -> bool:
                      f"name={rule_name}",
                      "dir=out", "action=block", "protocol=UDP",
                      f"remoteport={port}",
-                     f"program=%ProgramFiles%\\..\\..\\{browser}",
+                     f"program={browser_path}",
                      "enable=yes"],
                     capture_output=True, text=True, timeout=10
                 )
@@ -503,9 +556,8 @@ def cleanup(state: Optional[ProxyState] = None) -> None:
     if state.firefox_prefs_modified:
         unset_firefox_proxy(state.firefox_prefs_backup)
 
-    # Remove firewall rules
-    if state.firewall_rules_created:
-        remove_firewall_rules()
+    # Remove firewall rules (unconditional — rules are created every session)
+    remove_firewall_rules()
 
     # Delete state file
     delete_state()
