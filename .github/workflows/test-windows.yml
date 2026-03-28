@@ -20,7 +20,11 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
       - name: Run unit tests
-        run: python -m pytest test/test_presets.py test/test_proxy_addon.py test/test_system_config.py test/test_health_check.py test/test_main.py -v --tb=short
+        run: |
+          python -m pytest test/test_presets.py test/test_proxy_addon.py test/test_system_config.py test/test_health_check.py test/test_main.py -v --tb=short
+      - name: Run security-hardening unit tests
+        run: |
+          python -m pytest test/test_ca_lifecycle.py test/test_cleanup_paths.py test/test_firefox_backup.py test/test_port_selection.py test/test_watchdog.py test/unit/ -v --tb=short
 
   integration-tests:
     runs-on: windows-latest
@@ -36,7 +40,9 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
       - name: Run integration tests
-        run: python -m pytest test/test_integration_windows.py -v --tb=short -x
+        run: python -m pytest test/test_integration_windows.py test/test_integration_security.py -v --tb=short -x
+      - name: Run E2E security lifecycle tests
+        run: python -m pytest test/test_e2e_security.py -v --tb=short -x
 
   e2e-browser-tests:
     runs-on: windows-latest
