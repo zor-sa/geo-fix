@@ -339,37 +339,43 @@ def main():
     # Start mitmproxy FIRST — no system changes until proxy is confirmed running
     proxy_thread = _start_mitmproxy(addon, confdir=session_tmpdir, port=port)
 
-    # Install CA cert after mitmproxy generates it, capture thumbprint
-    ca_thumbprint = install_ca_cert(session_tmpdir)
-
-    # Save partial state so watchdog can load it for crash recovery
-    original_proxy = set_wininet_proxy(port=port)
-    firefox_backup = set_firefox_proxy(port=port)
-
-    # Create firewall rules (every session, not just wizard)
-    create_firewall_rules()
-
+    # Incremental state saving: save after EACH system change so watchdog
+    # can recover from crash at any point during startup sequence.
     state = ProxyState(
         pid=os.getpid(),
         preset_code=country_code,
         timestamp=datetime.datetime.now().isoformat(),
-        original_proxy_enable=original_proxy.get("ProxyEnable"),
-        original_proxy_server=original_proxy.get("ProxyServer"),
-        original_proxy_override=original_proxy.get("ProxyOverride"),
-        firefox_prefs_modified=firefox_backup is not None,
-        firefox_prefs_backup=firefox_backup,
         session_id=session_id,
         session_tmpdir=session_tmpdir,
-        ca_thumbprint=ca_thumbprint,
         proxy_port=port,
     )
+
+    # Install CA cert after mitmproxy generates it
+    ca_thumbprint = install_ca_cert(session_tmpdir)
+    state.ca_thumbprint = ca_thumbprint
     save_state(state)
 
-    # Spawn watchdog after state is saved (so it can load state on crash)
+    # Spawn watchdog BEFORE system modifications (so it can recover from crash)
     from src.system_config import STATE_FILE
     _watchdog_proc = _spawn_watchdog(
         os.getpid(), str(STATE_FILE), session_tmpdir, session_id, stop_token
     )
+
+    # Each system change: modify → update state → save (crash-safe)
+    original_proxy = set_wininet_proxy(port=port)
+    state.original_proxy_enable = original_proxy.get("ProxyEnable")
+    state.original_proxy_server = original_proxy.get("ProxyServer")
+    state.original_proxy_override = original_proxy.get("ProxyOverride")
+    save_state(state)
+
+    firefox_backup = set_firefox_proxy(port=port)
+    state.firefox_prefs_modified = firefox_backup is not None
+    state.firefox_prefs_backup = firefox_backup
+    save_state(state)
+
+    # Create firewall rules (every session, not just wizard)
+    create_firewall_rules()
+    save_state(state)
 
     # Country switch callback for tray
     def on_switch_country(code: str):

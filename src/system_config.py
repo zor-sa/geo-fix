@@ -528,6 +528,64 @@ def remove_firewall_rules() -> None:
 
 # === Cleanup ===
 
+def stateless_cleanup() -> None:
+    """Best-effort cleanup when no state file is available.
+
+    Detects and reverts geo-fix artifacts by well-known markers:
+    - Proxy: if ProxyServer contains 127.0.0.1, disable proxy
+    - CA cert: remove any mitmproxy cert by name
+    - Tmpdirs: remove geo-fix-* directories in system temp
+    - Firewall: remove all rules with geo-fix prefix
+    - Firefox: remove user.js if it contains geo-fix marker
+    All operations are idempotent and safe to run even if geo-fix was not running.
+    """
+    logger.info("Running stateless best-effort cleanup...")
+
+    # Reset proxy if it points to localhost (likely ours)
+    if sys.platform == "win32":
+        current = _get_registry_proxy_settings()
+        if current.get("ProxyEnable") == 1 and "127.0.0.1" in current.get("ProxyServer", ""):
+            logger.info("Proxy points to localhost — resetting")
+            unset_wininet_proxy({"ProxyEnable": 0, "ProxyServer": "", "ProxyOverride": ""})
+
+    # Remove mitmproxy CA cert by name (fallback — no thumbprint)
+    uninstall_ca_cert(thumbprint=None)
+
+    # Clean up geo-fix-* tmpdirs in system temp
+    temp_dir = Path(tempfile.gettempdir())
+    for d in temp_dir.glob("geo-fix-*"):
+        if d.is_dir():
+            logger.info("Removing leftover tmpdir: %s", d)
+            shutil.rmtree(str(d), ignore_errors=True)
+
+    # Remove firewall rules
+    remove_firewall_rules()
+
+    # Check Firefox user.js for geo-fix marker
+    profile = _find_firefox_profile()
+    if profile:
+        user_js = profile / "user.js"
+        if user_js.exists():
+            try:
+                content = user_js.read_text(encoding="utf-8")
+                if "geo-fix: proxy configuration" in content:
+                    # Check for backup
+                    backup = user_js.with_suffix(".js.geo-fix-backup")
+                    if backup.exists():
+                        shutil.copy2(str(backup), str(user_js))
+                        backup.unlink()
+                        logger.info("Firefox user.js restored from backup (stateless)")
+                    else:
+                        user_js.unlink()
+                        logger.info("Firefox user.js removed (contained geo-fix marker)")
+            except Exception as e:
+                logger.warning("Could not check Firefox user.js: %s", e)
+
+    # Delete state file if it exists
+    delete_state()
+    logger.info("Stateless cleanup complete")
+
+
 def cleanup(state: Optional[ProxyState] = None) -> None:
     """Revert all system changes. Used on stop and crash recovery.
 
@@ -539,7 +597,8 @@ def cleanup(state: Optional[ProxyState] = None) -> None:
         state = load_state()
 
     if state is None:
-        logger.info("No state to clean up")
+        logger.info("No state file found — attempting best-effort stateless cleanup")
+        stateless_cleanup()
         return
 
     logger.info("Running cleanup...")

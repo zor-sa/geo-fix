@@ -66,15 +66,11 @@ class TestCleanupCallsCertRemoval:
         mock_cert.assert_called_once_with(None)
         mock_tmpdir.assert_called_once_with(None)
 
-    @patch("src.system_config.delete_state")
-    @patch("src.system_config.unset_wininet_proxy")
-    @patch("src.system_config.delete_session_tmpdir")
-    @patch("src.system_config.uninstall_ca_cert")
-    def test_cleanup_with_no_state_is_noop(self, mock_cert, mock_tmpdir, mock_proxy, mock_state):
+    @patch("src.system_config.stateless_cleanup")
+    def test_cleanup_with_no_state_calls_stateless(self, mock_stateless):
         with patch("src.system_config.load_state", return_value=None):
             cleanup(None)
-        mock_cert.assert_not_called()
-        mock_tmpdir.assert_not_called()
+        mock_stateless.assert_called_once()
 
 
 class TestCleanupWithRealTmpdir:

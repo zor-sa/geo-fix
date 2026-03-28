@@ -157,10 +157,11 @@ class TestGeoFixAddon:
         addon.request(flow)
         assert flow.request.headers["Accept-Language"] == "en-US,en;q=0.9"
 
-    def test_request_rewrites_for_non_target_domain(self, addon, make_flow):
+    def test_request_skips_non_target_domain(self, addon, make_flow):
         flow = make_flow(host="example.com")
+        flow.request.headers["Accept-Language"] = "ru-RU"
         addon.request(flow)
-        assert flow.request.headers["Accept-Language"] == "en-US,en;q=0.9"
+        assert flow.request.headers["Accept-Language"] == "ru-RU"
 
     def test_response_injects_js_for_target_domain(self, addon, make_flow):
         flow = make_flow()

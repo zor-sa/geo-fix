@@ -164,9 +164,11 @@ def _run_gui_wizard() -> bool:
     def handle_skip():
         confirmed = messagebox.askokcancel(
             "Пропустить настройку?",
-            "Без настройки HTTPS-перехват работать не будет.\n\n"
-            "Браузер будет получать ошибки сертификата для всех сайтов.\n\n"
-            "Вы уверены, что хотите пропустить?"
+            "При пропуске не будут установлены правила файрвола "
+            "(дополнительная WebRTC-защита) и вы не увидите инструкции "
+            "по настройке DNS.\n\n"
+            "Базовая функциональность geo-fix будет работать.\n\n"
+            "Пропустить?"
         )
         if confirmed:
             mark_setup_complete()
@@ -185,7 +187,7 @@ def _run_gui_wizard() -> bool:
     )
 
     root.mainloop()
-    return success.get("firewall", False)
+    return success.get("all", False)
 
 
 def _run_console_wizard() -> bool:
