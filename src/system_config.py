@@ -206,11 +206,11 @@ def set_firefox_proxy() -> Optional[str]:
 
     prefs_file = profile / "user.js"  # user.js overrides prefs.js
 
-    # Backup existing user.js
+    # Backup existing user.js (copy, not rename — original stays in place until overwritten)
     backup_path = None
     if prefs_file.exists():
         backup_path = str(prefs_file.with_suffix(".js.geo-fix-backup"))
-        prefs_file.rename(backup_path)
+        shutil.copy2(str(prefs_file), backup_path)
 
     # Write proxy configuration
     proxy_prefs = f"""// geo-fix: proxy configuration (auto-generated, will be removed on stop)
@@ -243,8 +243,9 @@ def unset_firefox_proxy(backup_path: Optional[str] = None) -> None:
     prefs_file = profile / "user.js"
 
     if backup_path and Path(backup_path).exists():
-        # Restore backup
-        Path(backup_path).rename(prefs_file)
+        # Restore backup (copy + unlink: crash-safe — backup survives partial restore)
+        shutil.copy2(backup_path, str(prefs_file))
+        Path(backup_path).unlink()
         logger.info("Firefox user.js restored from backup")
     elif prefs_file.exists():
         # Remove our user.js if it contains our marker
