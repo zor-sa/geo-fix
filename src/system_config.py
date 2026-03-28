@@ -400,7 +400,12 @@ def remove_firewall_rules() -> None:
 # === Cleanup ===
 
 def cleanup(state: Optional[ProxyState] = None) -> None:
-    """Revert all system changes. Used on stop and crash recovery."""
+    """Revert all system changes. Used on stop and crash recovery.
+
+    Cleanup order: CA cert → session tmpdir → proxy → Firefox → firewall → state file.
+    CA cert and tmpdir MUST be removed before delete_state() because they need
+    thumbprint and path from the state object.
+    """
     if state is None:
         state = load_state()
 
