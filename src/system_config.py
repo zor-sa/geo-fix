@@ -18,8 +18,11 @@ from typing import Optional
 
 logger = logging.getLogger("geo-fix.config")
 
-# State file location: alongside the executable
-STATE_FILE = Path(os.path.dirname(os.path.abspath(sys.argv[0]))) / ".geo-fix-state.json"
+# State file location: alongside the executable (binary encrypted blob)
+STATE_FILE = Path(os.path.dirname(os.path.abspath(sys.argv[0]))) / ".geo-fix-state.bin"
+
+# DPAPI entropy for state encryption
+_DPAPI_ENTROPY = b"geo-fix-state-v1"
 
 # Firewall rule naming prefix
 FW_RULE_PREFIX = "geo-fix-webrtc"
@@ -71,23 +74,87 @@ class ProxyState:
         return cls(**parsed)
 
 
+def _dpapi_encrypt(plaintext: bytes) -> bytes:
+    """Encrypt data using DPAPI (user-scope). Passthrough on non-Windows."""
+    if sys.platform != "win32":
+        return plaintext
+
+    import ctypes
+    import ctypes.wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", ctypes.wintypes.DWORD),
+                     ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+
+    input_blob = DATA_BLOB(len(plaintext), ctypes.create_string_buffer(plaintext, len(plaintext)))
+    entropy_blob = DATA_BLOB(len(_DPAPI_ENTROPY), ctypes.create_string_buffer(_DPAPI_ENTROPY, len(_DPAPI_ENTROPY)))
+    output_blob = DATA_BLOB()
+
+    if not crypt32.CryptProtectData(
+        ctypes.byref(input_blob), None, ctypes.byref(entropy_blob),
+        None, None, 0, ctypes.byref(output_blob)
+    ):
+        raise OSError("CryptProtectData failed")
+
+    encrypted = ctypes.string_at(output_blob.pbData, output_blob.cbData)
+    kernel32.LocalFree(output_blob.pbData)
+    return encrypted
+
+
+def _dpapi_decrypt(ciphertext: bytes) -> bytes:
+    """Decrypt DPAPI-encrypted data (user-scope). Passthrough on non-Windows."""
+    if sys.platform != "win32":
+        return ciphertext
+
+    import ctypes
+    import ctypes.wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", ctypes.wintypes.DWORD),
+                     ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+
+    input_blob = DATA_BLOB(len(ciphertext), ctypes.create_string_buffer(ciphertext, len(ciphertext)))
+    entropy_blob = DATA_BLOB(len(_DPAPI_ENTROPY), ctypes.create_string_buffer(_DPAPI_ENTROPY, len(_DPAPI_ENTROPY)))
+    output_blob = DATA_BLOB()
+
+    if not crypt32.CryptUnprotectData(
+        ctypes.byref(input_blob), None, ctypes.byref(entropy_blob),
+        None, None, 0, ctypes.byref(output_blob)
+    ):
+        raise OSError("CryptUnprotectData failed — data may be tampered or from another user")
+
+    decrypted = ctypes.string_at(output_blob.pbData, output_blob.cbData)
+    kernel32.LocalFree(output_blob.pbData)
+    return decrypted
+
+
 def save_state(state: ProxyState) -> None:
-    """Save state atomically (write temp + rename)."""
+    """Save state atomically as DPAPI-encrypted binary blob."""
+    plaintext = state.to_json().encode("utf-8")
+    encrypted = _dpapi_encrypt(plaintext)
     temp_path = STATE_FILE.with_suffix(".tmp")
-    temp_path.write_text(state.to_json(), encoding="utf-8")
+    temp_path.write_bytes(encrypted)
     temp_path.replace(STATE_FILE)
     logger.info("State saved to %s", STATE_FILE)
 
 
 def load_state() -> Optional[ProxyState]:
-    """Load state from file. Returns None if not found or invalid."""
+    """Load and decrypt state from file. Returns None if not found, tampered, or invalid."""
     if not STATE_FILE.exists():
         return None
     try:
-        data = STATE_FILE.read_text(encoding="utf-8")
-        return ProxyState.from_json(data)
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
-        logger.warning("Invalid state file: %s", e)
+        encrypted = STATE_FILE.read_bytes()
+        plaintext = _dpapi_decrypt(encrypted)
+        return ProxyState.from_json(plaintext.decode("utf-8"))
+    except Exception as e:
+        logger.warning("State file rejected: %s", e)
+        delete_state()
         return None
 
 

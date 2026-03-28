@@ -54,14 +54,14 @@ class TestStateFile:
         assert load_state() is None
 
     def test_load_corrupt_file(self, tmp_path, monkeypatch):
-        state_file = tmp_path / "state.json"
-        state_file.write_text("corrupt data")
+        state_file = tmp_path / "state.bin"
+        state_file.write_bytes(b"corrupt data")
         monkeypatch.setattr("src.system_config.STATE_FILE", state_file)
         assert load_state() is None
 
     def test_delete_state(self, tmp_path, monkeypatch):
-        state_file = tmp_path / "state.json"
-        state_file.write_text("{}")
+        state_file = tmp_path / "state.bin"
+        state_file.write_bytes(b"data")
         monkeypatch.setattr("src.system_config.STATE_FILE", state_file)
         delete_state()
         assert not state_file.exists()
