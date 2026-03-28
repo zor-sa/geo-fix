@@ -41,6 +41,8 @@ from src.system_config import (
     cleanup,
     create_firewall_rules,
     create_session_tmpdir,
+    delete_ca_key_files,
+    delete_ca_public_cert,
     delete_state,
     install_ca_cert,
     load_state,
@@ -339,6 +341,10 @@ def main():
     # Start mitmproxy FIRST — no system changes until proxy is confirmed running
     proxy_thread = _start_mitmproxy(addon, confdir=session_tmpdir, port=port)
 
+    # Delete CA private key from disk — mitmproxy has loaded it into memory.
+    # Key exists on disk only during mitmproxy startup (seconds, not hours).
+    delete_ca_key_files(session_tmpdir)
+
     # Incremental state saving: save after EACH system change so watchdog
     # can recover from crash at any point during startup sequence.
     state = ProxyState(
@@ -350,8 +356,10 @@ def main():
         proxy_port=port,
     )
 
-    # Install CA cert after mitmproxy generates it
+    # Install CA cert (public cert still on disk for certutil)
     ca_thumbprint = install_ca_cert(session_tmpdir)
+    # Now delete the public cert too — no longer needed
+    delete_ca_public_cert(session_tmpdir)
     state.ca_thumbprint = ca_thumbprint
     save_state(state)
 

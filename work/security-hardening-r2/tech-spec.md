@@ -1,6 +1,6 @@
 ---
 feature: security-hardening-r2
-status: draft
+status: approved
 work_type: bug
 size: M
 created: 2026-03-28

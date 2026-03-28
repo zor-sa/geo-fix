@@ -363,6 +363,33 @@ def create_session_tmpdir() -> str:
     return tmpdir
 
 
+def delete_ca_key_files(confdir: str) -> None:
+    """Delete CA private key and related sensitive files from confdir.
+
+    Called after mitmproxy loads the key into memory. mitmproxy caches
+    the key in CertStore.default_privatekey and never re-reads from disk.
+    Keeps mitmproxy-ca-cert.pem (public cert) for install_ca_cert().
+    """
+    sensitive_files = [
+        "mitmproxy-ca.pem",       # Private key (PEM)
+        "mitmproxy-ca-cert.cer",  # Public cert (DER copy)
+        "mitmproxy-ca.p12",       # PKCS12 bundle (contains private key)
+    ]
+    for name in sensitive_files:
+        f = Path(confdir) / name
+        if f.exists():
+            f.unlink()
+            logger.info("Deleted sensitive file: %s", f.name)
+
+
+def delete_ca_public_cert(confdir: str) -> None:
+    """Delete the public CA cert after it has been installed to the store."""
+    cert = Path(confdir) / "mitmproxy-ca-cert.pem"
+    if cert.exists():
+        cert.unlink()
+        logger.info("Deleted public cert: %s", cert.name)
+
+
 def delete_session_tmpdir(session_tmpdir: Optional[str]) -> None:
     """Delete the per-session temp directory containing CA private key."""
     if session_tmpdir is None:
