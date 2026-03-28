@@ -13,11 +13,7 @@ import webbrowser
 from pathlib import Path
 from typing import Optional
 
-from .system_config import (
-    MITMPROXY_CA_CERT,
-    create_firewall_rules,
-    install_ca_cert,
-)
+from .system_config import create_firewall_rules
 
 logger = logging.getLogger("geo-fix.wizard")
 
@@ -44,10 +40,6 @@ def run_setup_wizard(force: bool = False) -> bool:
     if not force and is_setup_complete():
         logger.info("Setup already completed, skipping wizard")
         return True
-
-    # Check if CA cert exists (mitmproxy generates it on first run)
-    if not MITMPROXY_CA_CERT.exists():
-        logger.info("CA cert not found — will be generated on first proxy start")
 
     try:
         return _run_gui_wizard()
@@ -89,25 +81,17 @@ def _run_gui_wizard() -> bool:
         status_label.config(text=text)
         root.update()
 
-    # Step 1: Certificate
+    # Step 1: Certificate info (actual install happens per-session in main.py)
     def step_cert():
         update_status(
-            "Шаг 1/3: Установка сертификата\n\n"
-            "Для перехвата геосигналов в браузере нужно установить "
-            "специальный сертификат. Это безопасно — сертификат работает "
-            "только на вашем компьютере и используется только для подмены "
-            "геолокации.\n\n"
-            "Данные НЕ записываются и НЕ отправляются куда-либо."
+            "Шаг 1/3: Сертификат безопасности\n\n"
+            "geo-fix автоматически создаёт временный сертификат при "
+            "каждом запуске. Сертификат работает только на вашем "
+            "компьютере и удаляется при остановке.\n\n"
+            "Данные НЕ записываются и НЕ отправляются куда-либо.\n\n"
+            "Сертификат будет установлен при запуске geo-fix."
         )
-        if install_ca_cert():
-            success["cert"] = True
-            update_status("✓ Сертификат установлен для Chrome/Edge.\n\n"
-                         "Firefox: сертификат будет подхвачен автоматически "
-                         "через enterprise_roots.")
-        else:
-            update_status("⚠ Не удалось установить сертификат.\n"
-                         "Возможно, сертификат ещё не сгенерирован.\n"
-                         "Он будет создан при первом запуске прокси.")
+        success["cert"] = True
 
     # Step 2: Firewall (optional)
     def step_firewall():
@@ -177,8 +161,18 @@ def _run_gui_wizard() -> bool:
     next_btn = tk.Button(btn_frame, text="Далее →", command=next_step, width=15)
     next_btn.pack(side="left", padx=5)
 
-    skip_btn = tk.Button(btn_frame, text="Пропустить настройку",
-                         command=lambda: (mark_setup_complete(), root.destroy()))
+    def handle_skip():
+        confirmed = messagebox.askokcancel(
+            "Пропустить настройку?",
+            "Без настройки HTTPS-перехват работать не будет.\n\n"
+            "Браузер будет получать ошибки сертификата для всех сайтов.\n\n"
+            "Вы уверены, что хотите пропустить?"
+        )
+        if confirmed:
+            mark_setup_complete()
+            root.destroy()
+
+    skip_btn = tk.Button(btn_frame, text="Пропустить настройку", command=handle_skip)
     skip_btn.pack(side="left", padx=5)
 
     # Start
@@ -198,13 +192,20 @@ def _run_console_wizard() -> bool:
     """Fallback console-based wizard for headless/no-display environments."""
     print("\n=== geo-fix: Первоначальная настройка ===\n")
 
-    print("Шаг 1: Установка сертификата...")
-    if install_ca_cert():
-        print("  ✓ Сертификат установлен")
-    else:
-        print("  ⚠ Сертификат будет создан при первом запуске")
+    print("Шаг 1: Сертификат безопасности")
+    print("  geo-fix автоматически создаёт временный сертификат при каждом запуске.")
+    print("  Сертификат удаляется при остановке.")
 
-    print("\nШаг 2: Настройте «Безопасный DNS» в браузере:")
+    answer = input("\nШаг 2: Установить правила файрвола для WebRTC-защиты? (требует права администратора) [y/N]: ")
+    if answer.strip().lower() == "y":
+        if create_firewall_rules():
+            print("  ✓ Правила файрвола установлены")
+        else:
+            print("  ⚠ Не удалось установить правила файрвола. Базовая защита активна.")
+    else:
+        print("  Файрвол пропущен. Базовая защита WebRTC активна.")
+
+    print("\nШаг 3: Настройте «Безопасный DNS» в браузере:")
     print("  Chrome: chrome://settings/security → Безопасный DNS → Включить")
     print("  Firefox: about:preferences#privacy → DNS через HTTPS → Включить")
 

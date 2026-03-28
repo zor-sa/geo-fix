@@ -15,7 +15,12 @@ set "APP_DIR=%INSTALL_DIR%\app"
 set "DESKTOP=%USERPROFILE%\Desktop"
 set "PYTHON_VERSION=3.12.7"
 set "PYTHON_URL=https://www.python.org/ftp/python/%PYTHON_VERSION%/python-%PYTHON_VERSION%-embed-amd64.zip"
-set "PIP_URL=https://bootstrap.pypa.io/get-pip.py"
+:: Pinned SHA-256 for Python 3.12.7 embed AMD64 (verify at https://www.python.org/downloads/release/python-3127/)
+set "PYTHON_ZIP_HASH=73AC3E2852AEB3FEDDFEEE3AA1D0EF63997DCBE51DAC24A20C12ACC29E1E7B30"
+set "PIP_VERSION=24.3.1"
+set "PIP_URL=https://bootstrap.pypa.io/pip/%PIP_VERSION%/get-pip.py"
+:: Pinned SHA-256 for get-pip.py v24.3.1 (verify by downloading and computing hash)
+set "PIP_HASH=6FB7B781206356F45AD79EFBB19322CAA6C2A5AD39092D0D44D0FEC94117E118"
 
 echo [1/6] Создаю папку установки...
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
@@ -31,6 +36,14 @@ if not exist "%PYTHON_DIR%\python.exe" (
         pause
         exit /b 1
     )
+    :: Verify SHA-256 hash
+    powershell -Command "& { $h = (Get-FileHash '%INSTALL_DIR%\python-embed.zip' -Algorithm SHA256).Hash; if ($h.ToUpper() -ne '%PYTHON_ZIP_HASH%'.ToUpper()) { Write-Error ('Hash mismatch: expected ' + '%PYTHON_ZIP_HASH%' + ' got ' + $h); exit 1 } }"
+    if errorlevel 1 (
+        echo ОШИБКА: Хэш Python zip не совпадает. Возможно, файл повреждён или подменён.
+        del "%INSTALL_DIR%\python-embed.zip" 2>nul
+        pause
+        exit /b 2
+    )
     echo    Распаковываю...
     powershell -Command "Expand-Archive -Path '%INSTALL_DIR%\python-embed.zip' -DestinationPath '%PYTHON_DIR%' -Force" 2>nul
     del "%INSTALL_DIR%\python-embed.zip" 2>nul
@@ -45,6 +58,14 @@ if not exist "%PYTHON_DIR%\python.exe" (
 echo [3/6] Устанавливаю pip...
 if not exist "%PYTHON_DIR%\Scripts\pip.exe" (
     powershell -Command "& {[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%PIP_URL%' -OutFile '%INSTALL_DIR%\get-pip.py'}" 2>nul
+    :: Verify SHA-256 hash
+    powershell -Command "& { $h = (Get-FileHash '%INSTALL_DIR%\get-pip.py' -Algorithm SHA256).Hash; if ($h.ToUpper() -ne '%PIP_HASH%'.ToUpper()) { Write-Error ('Hash mismatch: expected ' + '%PIP_HASH%' + ' got ' + $h); exit 1 } }"
+    if errorlevel 1 (
+        echo ОШИБКА: Хэш get-pip.py не совпадает. Возможно, файл повреждён или подменён.
+        del "%INSTALL_DIR%\get-pip.py" 2>nul
+        pause
+        exit /b 2
+    )
     "%PYTHON_DIR%\python.exe" "%INSTALL_DIR%\get-pip.py" --no-warn-script-location >nul 2>&1
     del "%INSTALL_DIR%\get-pip.py" 2>nul
 ) else (
@@ -68,6 +89,7 @@ xcopy /E /Y /Q "%~dp0src\*" "%APP_DIR%\src\" >nul 2>&1
 echo @echo off > "%INSTALL_DIR%\geo-fix.bat"
 echo chcp 65001 ^>nul 2^>^&1 >> "%INSTALL_DIR%\geo-fix.bat"
 echo "%PYTHON_DIR%\python.exe" "%APP_DIR%\src\main.py" %%* >> "%INSTALL_DIR%\geo-fix.bat"
+attrib +R "%INSTALL_DIR%\geo-fix.bat"
 
 :: Создаём ярлыки на рабочем столе
 echo [6/6] Создаю ярлыки на рабочем столе...

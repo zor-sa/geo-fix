@@ -103,10 +103,14 @@ def _modify_csp(csp_value: str, nonce: str) -> str:
 
     if not has_script_src:
         # Check if default-src exists, create script-src from it
+        # Filter out unsafe tokens that should not be promoted to script-src
+        _unsafe_tokens = {"'unsafe-inline'", "'unsafe-eval'", "'unsafe-hashes'"}
         for directive in directives:
             parts = directive.split()
             if parts and parts[0].lower() == "default-src":
-                new_directives.append(f"script-src {' '.join(parts[1:])} {nonce_value}")
+                filtered = [t for t in parts[1:] if t.lower() not in _unsafe_tokens]
+                sources = " ".join(filtered)
+                new_directives.append(f"script-src {sources} {nonce_value}".strip())
                 has_script_src = True
                 break
 
@@ -189,10 +193,9 @@ class GeoFixAddon:
         modified_html = html_text[:inject_pos] + script_tag + html_text[inject_pos:]
         flow.response.text = modified_html
 
-        # Modify CSP headers to allow our nonce
-        for header_name in ("content-security-policy", "content-security-policy-report-only"):
-            if header_name in flow.response.headers:
-                original_csp = flow.response.headers[header_name]
-                flow.response.headers[header_name] = _modify_csp(original_csp, nonce)
+        # Modify enforcing CSP header only (not report-only)
+        if "content-security-policy" in flow.response.headers:
+            original_csp = flow.response.headers["content-security-policy"]
+            flow.response.headers["content-security-policy"] = _modify_csp(original_csp, nonce)
 
         logger.debug("Injected JS into %s (nonce: %s)", flow.request.url, nonce[:8])
