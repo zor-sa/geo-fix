@@ -55,6 +55,7 @@ class ProxyState:
     session_id: Optional[str] = None
     session_tmpdir: Optional[str] = None
     ca_thumbprint: Optional[str] = None
+    proxy_port: Optional[int] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
@@ -122,7 +123,7 @@ def _get_registry_proxy_settings() -> dict:
         return {"ProxyEnable": 0, "ProxyServer": "", "ProxyOverride": ""}
 
 
-def set_wininet_proxy() -> dict:
+def set_wininet_proxy(port: int = PROXY_PORT) -> dict:
     """Set system proxy to our mitmproxy. Returns original settings."""
     original = _get_registry_proxy_settings()
 
@@ -130,16 +131,17 @@ def set_wininet_proxy() -> dict:
         logger.warning("Not on Windows — skipping WinINET proxy setup")
         return original
 
+    proxy_addr = f"{PROXY_HOST}:{port}"
     import winreg
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-        winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, PROXY_ADDR)
+        winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, proxy_addr)
         winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, "<local>")
 
     # Notify system of proxy change
     _notify_proxy_change()
-    logger.info("WinINET proxy set to %s", PROXY_ADDR)
+    logger.info("WinINET proxy set to %s", proxy_addr)
     return original
 
 
@@ -197,7 +199,7 @@ def _find_firefox_profile() -> Optional[Path]:
     return None
 
 
-def set_firefox_proxy() -> Optional[str]:
+def set_firefox_proxy(port: int = PROXY_PORT) -> Optional[str]:
     """Configure Firefox to use our proxy. Returns backup path if prefs were modified."""
     profile = _find_firefox_profile()
     if profile is None:
@@ -216,9 +218,9 @@ def set_firefox_proxy() -> Optional[str]:
     proxy_prefs = f"""// geo-fix: proxy configuration (auto-generated, will be removed on stop)
 user_pref("network.proxy.type", 1);
 user_pref("network.proxy.http", "{PROXY_HOST}");
-user_pref("network.proxy.http_port", {PROXY_PORT});
+user_pref("network.proxy.http_port", {port});
 user_pref("network.proxy.ssl", "{PROXY_HOST}");
-user_pref("network.proxy.ssl_port", {PROXY_PORT});
+user_pref("network.proxy.ssl_port", {port});
 user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");
 user_pref("security.enterprise_roots.enabled", true);
 """

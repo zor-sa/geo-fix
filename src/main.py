@@ -14,6 +14,7 @@ import datetime
 import logging
 import os
 import signal
+import socket
 import sys
 import threading
 import time
@@ -77,6 +78,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--stop", action="store_true", help="Stop running instance")
     parser.add_argument("--cleanup", action="store_true", help="Clean up stale state")
     parser.add_argument("--setup", action="store_true", help="Re-run setup wizard")
+    parser.add_argument("--port", type=int, default=None,
+                        help="Proxy port (default: 8080, auto-select if occupied)")
     return parser.parse_args()
 
 
@@ -91,6 +94,29 @@ def _validate_country(code: str) -> str:
         print(f"Ошибка: '{code}' — неизвестная страна. Доступные: {valid}")
         sys.exit(1)
     return code
+
+
+def _select_port(requested: int = None) -> int:
+    """Select a proxy port. Tries requested (or 8080), falls back to auto-select."""
+    target = requested if requested is not None else PROXY_PORT
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((PROXY_HOST, target))
+            return target
+    except OSError:
+        logger.info("Port %d is occupied, auto-selecting...", target)
+
+    # Auto-select
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((PROXY_HOST, 0))
+            port = s.getsockname()[1]
+            logger.info("Auto-selected port %d", port)
+            return port
+    except OSError as e:
+        raise RuntimeError(
+            "Cannot bind any proxy port — aborting. Registry not modified."
+        ) from e
 
 
 def _handle_stop():
@@ -148,21 +174,20 @@ def _do_cleanup():
         logger.error("Cleanup error: %s", e)
 
 
-def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None) -> threading.Thread:
+def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None, port: int = PROXY_PORT) -> threading.Thread:
     """Start mitmproxy in a background thread."""
     from mitmproxy.options import Options
     from mitmproxy.tools.dump import DumpMaster
 
     def run_proxy():
-        kwargs = dict(listen_host=PROXY_HOST, listen_port=PROXY_PORT)
+        kwargs = dict(listen_host=PROXY_HOST, listen_port=port)
         if confdir:
             kwargs["confdir"] = confdir
         opts = Options(**kwargs)
         master = DumpMaster(opts)
         master.addons.add(addon)
 
-        # Verify binding
-        logger.info("Starting mitmproxy on %s:%d", PROXY_HOST, PROXY_PORT)
+        logger.info("Starting mitmproxy on %s:%d", PROXY_HOST, port)
 
         try:
             master.run()
@@ -175,8 +200,8 @@ def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None) -> threading.Threa
     # Wait for proxy to start
     for _ in range(30):
         time.sleep(0.5)
-        if check_proxy_running(PROXY_HOST, PROXY_PORT):
-            logger.info("mitmproxy is running")
+        if check_proxy_running(PROXY_HOST, port):
+            logger.info("mitmproxy is running on port %d", port)
             return thread
 
     logger.error("mitmproxy failed to start within 15 seconds")
@@ -245,18 +270,21 @@ def main():
     session_id = str(uuid.uuid4())
     session_tmpdir = create_session_tmpdir()
 
-    # Save original proxy settings
-    original_proxy = set_wininet_proxy()
-    firefox_backup = set_firefox_proxy()
+    # Select port (before any system modifications)
+    port = _select_port(args.port)
 
     # Create proxy addon
     addon = GeoFixAddon(preset)
 
-    # Start mitmproxy with per-session confdir (generates new CA)
-    proxy_thread = _start_mitmproxy(addon, confdir=session_tmpdir)
+    # Start mitmproxy FIRST — no system changes until proxy is confirmed running
+    proxy_thread = _start_mitmproxy(addon, confdir=session_tmpdir, port=port)
 
     # Install CA cert after mitmproxy generates it, capture thumbprint
     ca_thumbprint = install_ca_cert(session_tmpdir)
+
+    # NOW safe to modify system settings — mitmproxy is running
+    original_proxy = set_wininet_proxy(port=port)
+    firefox_backup = set_firefox_proxy(port=port)
 
     # Save state for crash recovery (includes session fields for cleanup)
     state = ProxyState(
@@ -272,6 +300,7 @@ def main():
         session_id=session_id,
         session_tmpdir=session_tmpdir,
         ca_thumbprint=ca_thumbprint,
+        proxy_port=port,
     )
     save_state(state)
 
