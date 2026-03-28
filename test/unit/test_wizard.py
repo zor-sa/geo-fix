@@ -54,13 +54,15 @@ class TestConsoleWizard:
 class TestWizardNoDirectCaInstall:
     def test_no_install_ca_cert_import(self):
         """setup_wizard.py should not import install_ca_cert."""
-        import importlib
         source = Path(__file__).parent.parent.parent / "src" / "setup_wizard.py"
-        content = source.read_text()
+        content = source.read_text(encoding="utf-8")
         assert "install_ca_cert" not in content
 
     def test_no_lambda_skip(self):
         """Skip button should not be a lambda with mark_setup_complete."""
         source = Path(__file__).parent.parent.parent / "src" / "setup_wizard.py"
-        content = source.read_text()
-        assert "lambda" not in content or "mark_setup_complete" not in content.split("lambda")[1].split("\n")[0] if "lambda" in content else True
+        content = source.read_text(encoding="utf-8")
+        # Verify no lambda that calls mark_setup_complete (old pattern)
+        for line in content.split("\n"):
+            if "lambda" in line and "mark_setup_complete" in line:
+                pytest.fail(f"Found lambda with mark_setup_complete: {line.strip()}")

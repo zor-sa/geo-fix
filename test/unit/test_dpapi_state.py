@@ -1,6 +1,7 @@
 """Tests for DPAPI state file encryption (Task 6: security-hardening)."""
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,13 +33,17 @@ class TestDpapiEncryptDecrypt:
     def test_tamper_rejected(self):
         plaintext = b"secret data"
         encrypted = _dpapi_encrypt(plaintext)
-        if len(encrypted) > 0:
-            # Flip a byte
-            tampered = bytearray(encrypted)
-            tampered[len(tampered) // 2] ^= 0xFF
-            tampered = bytes(tampered)
-            # On non-Windows (passthrough), tampered data just returns different content
-            # On Windows, CryptUnprotectData would fail
+        # Flip a byte
+        tampered = bytearray(encrypted)
+        tampered[len(tampered) // 2] ^= 0xFF
+        tampered = bytes(tampered)
+
+        if sys.platform == "win32":
+            # On Windows, DPAPI rejects tampered data
+            with pytest.raises(OSError):
+                _dpapi_decrypt(tampered)
+        else:
+            # On non-Windows (passthrough), tampered data returns different content
             result = _dpapi_decrypt(tampered)
             assert result != plaintext
 
@@ -70,11 +75,11 @@ class TestStatePersistence:
         state = ProxyState(pid=1, preset_code="US", timestamp="now")
         save_state(state)
 
-        # Tamper with file
+        # Aggressively tamper — overwrite most of the file
         data = state_file.read_bytes()
         tampered = bytearray(data)
-        if len(tampered) > 5:
-            tampered[5] ^= 0xFF
+        for i in range(min(len(tampered), 50)):
+            tampered[i] ^= 0xFF
         state_file.write_bytes(bytes(tampered))
 
         # Tampered file should be rejected (returns None and deletes the file)
