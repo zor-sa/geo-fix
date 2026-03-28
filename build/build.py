@@ -22,8 +22,9 @@ def build_exe():
         "--name", "geo-fix",
         "--noconfirm",
         "--clean",
-        # Add inject.js as data file
+        # Add data files
         "--add-data", f"{SRC_DIR / 'inject.js'}{os.pathsep}src",
+        "--add-data", f"{SRC_DIR / 'watchdog.py'}{os.pathsep}src",
         # Hidden imports for mitmproxy
         "--hidden-import", "mitmproxy.addons",
         "--hidden-import", "mitmproxy.tools.dump",

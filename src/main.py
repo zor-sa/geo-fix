@@ -13,8 +13,10 @@ import atexit
 import datetime
 import logging
 import os
+import secrets
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -50,11 +52,16 @@ from src.setup_wizard import is_setup_complete, run_setup_wizard
 from src.proxy_addon import GeoFixAddon
 from src.tray import GeoFixTray
 
+from src.watchdog import STOP_FLAG_NAME
+
 logger = logging.getLogger("geo-fix")
 
 # Global state for cleanup
 _cleanup_done = False
 _cleanup_lock = threading.Lock()
+_watchdog_proc = None
+_stop_token = None
+_session_tmpdir = None
 
 
 def _setup_logging():
@@ -119,6 +126,52 @@ def _select_port(requested: int = None) -> int:
         ) from e
 
 
+def _get_watchdog_path() -> str:
+    """Get path to watchdog.py, handling PyInstaller bundles."""
+    if getattr(sys, "frozen", False):
+        return str(Path(sys._MEIPASS) / "src" / "watchdog.py")
+    return str(Path(__file__).parent / "watchdog.py")
+
+
+def _spawn_watchdog(main_pid: int, state_file: str, session_tmpdir: str,
+                    session_id: str, stop_token: str) -> subprocess.Popen:
+    """Spawn watchdog subprocess."""
+    watchdog_path = _get_watchdog_path()
+    cmd = [sys.executable, watchdog_path, str(main_pid), state_file,
+           session_tmpdir, session_id, stop_token]
+
+    kwargs = {}
+    if sys.platform == "win32":
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        CREATE_NO_WINDOW = 0x08000000
+        kwargs["creationflags"] = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+
+    proc = subprocess.Popen(cmd, **kwargs)
+    logger.info("Watchdog spawned: PID %d", proc.pid)
+    return proc
+
+
+def _signal_watchdog_stop(session_tmpdir: str, stop_token: str) -> None:
+    """Write stop token to flag file so watchdog exits cleanly."""
+    if session_tmpdir and stop_token:
+        flag_path = Path(session_tmpdir) / STOP_FLAG_NAME
+        try:
+            flag_path.write_text(stop_token, encoding="utf-8")
+        except Exception as e:
+            logger.warning("Could not write watchdog stop flag: %s", e)
+
+
+def _remove_onlogon_task() -> None:
+    """Remove the ONLOGON scheduled task."""
+    try:
+        subprocess.run(
+            ["schtasks", "/delete", "/tn", "geo-fix-cleanup", "/f"],
+            capture_output=True, timeout=10
+        )
+    except Exception:
+        pass
+
+
 def _handle_stop():
     """Stop a running instance by reading its PID from state file."""
     state = load_state()
@@ -166,9 +219,12 @@ def _do_cleanup():
 
     logger.info("Performing cleanup...")
     try:
+        # Signal watchdog to stop BEFORE cleanup deletes tmpdir
+        _signal_watchdog_stop(_session_tmpdir, _stop_token)
         state = load_state()
         if state:
             cleanup(state)
+        _remove_onlogon_task()
         release_instance_lock()
     except Exception as e:
         logger.error("Cleanup error: %s", e)
@@ -267,8 +323,12 @@ def main():
         firewall_created = False
 
     # Create per-session tmpdir for ephemeral CA
+    global _session_tmpdir, _stop_token, _watchdog_proc
     session_id = str(uuid.uuid4())
     session_tmpdir = create_session_tmpdir()
+    _session_tmpdir = session_tmpdir
+    stop_token = secrets.token_hex(32)
+    _stop_token = stop_token
 
     # Select port (before any system modifications)
     port = _select_port(args.port)
@@ -282,11 +342,10 @@ def main():
     # Install CA cert after mitmproxy generates it, capture thumbprint
     ca_thumbprint = install_ca_cert(session_tmpdir)
 
-    # NOW safe to modify system settings — mitmproxy is running
+    # Save partial state so watchdog can load it for crash recovery
     original_proxy = set_wininet_proxy(port=port)
     firefox_backup = set_firefox_proxy(port=port)
 
-    # Save state for crash recovery (includes session fields for cleanup)
     state = ProxyState(
         pid=os.getpid(),
         preset_code=country_code,
@@ -303,6 +362,12 @@ def main():
         proxy_port=port,
     )
     save_state(state)
+
+    # Spawn watchdog after state is saved (so it can load state on crash)
+    from src.system_config import STATE_FILE
+    _watchdog_proc = _spawn_watchdog(
+        os.getpid(), str(STATE_FILE), session_tmpdir, session_id, stop_token
+    )
 
     # Country switch callback for tray
     def on_switch_country(code: str):
