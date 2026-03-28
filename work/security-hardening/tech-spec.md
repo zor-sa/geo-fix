@@ -1,7 +1,7 @@
 ---
 feature: security-hardening
 created: 2026-03-28
-status: draft
+status: approved
 size: L
 branch: feature/security-hardening
 ---
