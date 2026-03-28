@@ -1,0 +1,121 @@
+{
+  "status": "changes_required",
+  "summary": {
+    "totalFindings": 11,
+    "critical": 1,
+    "major": 5,
+    "minor": 5
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "A02: Cryptographic Failures",
+      "title": "DPAPI passthrough on non-Windows exposes state file as plaintext JSON",
+      "description": "The _dpapi_encrypt and _dpapi_decrypt functions return plaintext unchanged when sys.platform != 'win32'. If the tool is ever run in a non-Windows context (e.g., WSL, CI testing, cross-platform development), the state file containing original proxy settings, session paths, CA thumbprints, and session IDs is written as unencrypted JSON. An attacker with read access to the file can extract all session metadata. Even on Windows, this creates a false sense of security during testing since developers may validate state file handling on non-Windows and incorrectly conclude the data is protected.",
+      "location": "src/system_config.py:93-96 and src/system_config.py:123-125",
+      "impact": "Session metadata exposure including CA thumbprint, tmpdir paths, original proxy configuration, and session IDs. Could enable targeted cleanup disruption or session impersonation.",
+      "recommendation": "Either (a) raise an error on non-Windows to prevent accidental plaintext writes, or (b) implement a fallback encryption mechanism (e.g., Fernet with a key derived from a machine-specific secret) for non-Windows platforms. At minimum, add a clear WARNING log when passthrough is used.",
+      "cwe": "CWE-311"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "Stop token passed as CLI argument visible in process listing",
+      "description": "The watchdog subprocess receives the stop_token as a command-line argument (sys.argv[5]). On Windows, any user can enumerate process command lines via 'wmic process' or Task Manager, exposing the 64-character hex stop token. An attacker running as the same user (or an admin) can read the token and write it to the stop flag file, causing the watchdog to exit without performing crash recovery cleanup.",
+      "location": "src/main.py:141-142 and src/watchdog.py:155",
+      "impact": "An attacker who obtains the stop token can suppress crash recovery, leaving the system in a modified state (proxy enabled, CA cert installed, firewall rules active) after a crash.",
+      "recommendation": "Pass the stop token via an environment variable (inherited by the subprocess but not visible in process command lines on modern Windows), or write it to a file inside the ACL-restricted session tmpdir and have the watchdog read it from there at startup.",
+      "cwe": "CWE-214"
+    },
+    {
+      "severity": "major",
+      "category": "A01: Broken Access Control",
+      "title": "PID file race condition allows instance lock bypass",
+      "description": "The acquire_instance_lock function in health_check.py has a TOCTOU race between checking if a PID is running (line 139) and writing the new PID (line 148). Two instances started simultaneously can both pass the check and both write their PID, with the second overwriting the first. This also applies to the stale-state cleanup in main.py (lines 298-301) where load_state + cleanup is not atomic.",
+      "location": "src/health_check.py:134-150",
+      "impact": "Two geo-fix instances could run simultaneously, both modifying registry proxy settings and Firefox preferences. The second instance's cleanup would restore wrong original values, potentially leaving the system in an inconsistent proxy state.",
+      "recommendation": "Use a platform-native exclusive lock mechanism: on Windows, use msvcrt.locking or a named mutex (ctypes.windll.kernel32.CreateMutexW) instead of a PID file. This provides atomic acquire semantics.",
+      "cwe": "CWE-367"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "Session tmpdir ACL restriction incomplete -- relies on USERNAME env var",
+      "description": "The create_session_tmpdir function uses os.environ.get('USERNAME') to set ACL via icacls. The USERNAME environment variable can be spoofed or may differ from the actual logged-in user (e.g., in elevated contexts, runas scenarios, or service accounts). If USERNAME is empty, the ACL restriction is silently skipped entirely. The icacls failure is also caught and logged as a warning rather than treated as a hard failure.",
+      "location": "src/system_config.py:346-358",
+      "impact": "The session tmpdir containing the CA private key may have default inherited permissions, allowing other users or processes to read the private key material. The CA private key enables MITM of all HTTPS traffic for the session duration.",
+      "recommendation": "Use the Windows API (via ctypes) to get the current user SID directly rather than trusting the USERNAME environment variable. Alternatively, use os.getlogin() or ctypes.windll.advapi32.GetUserNameW. Treat ACL failure as a hard error that aborts session creation. Verify the resulting permissions after setting them.",
+      "cwe": "CWE-732"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "CA cert installed to Root store with user-scope certutil -- no pin/constraint on cert usage",
+      "description": "The CA certificate is added to the CurrentUser\\Root certificate store, which makes it a trusted root CA for all TLS connections from that user's processes (not just browser traffic proxied by geo-fix). Any process that can read the CA private key from the session tmpdir can sign certificates for arbitrary domains, enabling MITM attacks on any HTTPS connection from the user's session.",
+      "location": "src/system_config.py:384-415",
+      "impact": "If the CA private key is compromised (e.g., via inadequate tmpdir ACL), an attacker can intercept all HTTPS traffic from the user, including banking, email, and other sensitive connections. The cert has no name constraints or extended key usage restrictions.",
+      "recommendation": "Consider adding EKU (Extended Key Usage) constraints to the generated CA certificate to limit it to specific domains. Investigate whether mitmproxy supports generating CAs with name constraints. Document the risk clearly to users. Ensure the tmpdir ACL hardening (previous finding) is robust.",
+      "cwe": "CWE-295"
+    },
+    {
+      "severity": "major",
+      "category": "A08: Software and Data Integrity",
+      "title": "install.bat pip dependencies installed without version pinning or hash verification",
+      "description": "While Python and get-pip.py downloads have SHA-256 hash verification, the actual application dependencies (mitmproxy, pystray, Pillow) are installed via 'pip install' without pinned versions or --require-hashes. A compromised PyPI mirror or dependency confusion attack could inject malicious packages. The requirements.txt also uses >= version specifiers rather than exact pins.",
+      "location": "install.bat:77 and requirements.txt:1-3",
+      "impact": "Supply chain attack could inject malicious code into mitmproxy (which intercepts all HTTPS traffic) or Pillow (which processes images and has had past CVEs). Since mitmproxy sees all decrypted traffic, a backdoored version would be catastrophic.",
+      "recommendation": "Pin exact dependency versions in requirements.txt (e.g., mitmproxy==10.4.2). Generate a requirements.txt with hashes using 'pip-compile --generate-hashes'. Use 'pip install --require-hashes -r requirements.txt' in install.bat. Consider vendoring or using a lockfile.",
+      "cwe": "CWE-494"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "No logging of CA cert installation/removal events with timestamps for audit",
+      "description": "While logger.info is used for CA operations, there is no structured audit log that persists across sessions. CA certificate installations and removals are critical security events. If a crash occurs and the watchdog also fails, there is no persistent record of which CA cert (thumbprint) was installed, making manual remediation harder.",
+      "location": "src/system_config.py:384-428",
+      "impact": "Difficulty in forensic analysis if a CA cert is left installed after a failed cleanup. Users cannot verify whether all ephemeral CAs from previous sessions were properly removed.",
+      "recommendation": "Write CA install/remove events with thumbprint and timestamp to a persistent audit log file (separate from the DPAPI-encrypted state). Include a 'geo-fix --audit' command that lists any CA certs matching geo-fix patterns still in the store.",
+      "cwe": "CWE-778"
+    },
+    {
+      "severity": "minor",
+      "category": "A05: Security Misconfiguration",
+      "title": "Firewall rule creation does not verify existing rules before adding",
+      "description": "create_firewall_rules always adds new rules without checking if identical rules already exist. If geo-fix is run multiple times without proper cleanup (e.g., watchdog fails), duplicate firewall rules accumulate. The remove_firewall_rules function also silently ignores errors, so stale rules from crashed sessions may persist.",
+      "location": "src/system_config.py:466-500",
+      "impact": "Accumulated stale firewall rules. While not a direct security vulnerability, it indicates incomplete cleanup and makes system state harder to audit.",
+      "recommendation": "Before creating rules, query existing rules with the geo-fix prefix and remove stale ones. Add a 'netsh advfirewall firewall show rule name=<prefix>*' check.",
+      "cwe": "CWE-1188"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "State file written to application directory -- may fail or be world-readable",
+      "description": "STATE_FILE is placed alongside the executable (sys.argv[0] directory). In standard Windows installs to %LOCALAPPDATA%, this is acceptable. However, if installed to Program Files or a shared location, the state file may be readable by other users or fail to write due to permissions.",
+      "location": "src/system_config.py:22",
+      "impact": "If the state file is world-readable and DPAPI passthrough is active (non-Windows), session metadata is exposed. If the directory is read-only, state persistence fails silently.",
+      "recommendation": "Consider using a per-user directory (e.g., %LOCALAPPDATA%\\geo-fix\\) explicitly rather than relative to argv[0]. Add a startup check that the state file directory is writable and has appropriate permissions.",
+      "cwe": "CWE-538"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Watchdog ONLOGON task registered with process path from sys.argv[0]",
+      "description": "The _register_onlogon_task function uses sys.argv[0] as the executable path for the scheduled task. This value can be manipulated if the script is invoked indirectly. On PyInstaller builds, sys.argv[0] may not point to the correct executable. The task runs with /rl LIMITED but still executes attacker-controlled paths if sys.argv[0] is tampered.",
+      "location": "src/watchdog.py:78-92",
+      "impact": "If an attacker can influence how watchdog.py is invoked (e.g., symlink or path manipulation), the ONLOGON task could execute arbitrary code at next logon.",
+      "recommendation": "Resolve sys.argv[0] to an absolute, canonical path using os.path.realpath. Validate that the resolved path exists and is within the expected installation directory before registering it as a scheduled task.",
+      "cwe": "CWE-426"
+    },
+    {
+      "severity": "minor",
+      "category": "A03: Injection",
+      "title": "JS payload template substitution uses string replace without escaping",
+      "description": "The _build_js_payload function substitutes preset values (timezone, lat, lon, language) into the JS template using str.replace. While preset values are currently hardcoded in presets.py (not user-controlled), if presets are ever loaded from a config file or user input, values containing single quotes or JS syntax could break out of the string context and inject arbitrary JavaScript.",
+      "location": "src/proxy_addon.py:58-71",
+      "impact": "Currently low risk since presets are hardcoded. If presets become user-configurable, this becomes a stored XSS/code injection vector that executes in the context of every proxied page.",
+      "recommendation": "Use json.dumps() to properly escape string values before substitution, or use a proper templating engine. Even with hardcoded presets, defense-in-depth recommends proper escaping.",
+      "cwe": "CWE-79"
+    }
+  ]
+}

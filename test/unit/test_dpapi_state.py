@@ -23,11 +23,11 @@ class TestDpapiEncryptDecrypt:
         decrypted = _dpapi_decrypt(encrypted)
         assert decrypted == plaintext
 
-    def test_encrypted_differs_from_plaintext(self):
+    def test_encrypt_returns_bytes(self):
         plaintext = b'{"pid": 1234}'
         encrypted = _dpapi_encrypt(plaintext)
-        # On non-Windows, passthrough is acceptable
-        # On Windows, encrypted != plaintext
+        assert isinstance(encrypted, bytes)
+        assert len(encrypted) > 0
 
     def test_tamper_rejected(self):
         plaintext = b"secret data"
@@ -77,10 +77,9 @@ class TestStatePersistence:
             tampered[5] ^= 0xFF
         state_file.write_bytes(bytes(tampered))
 
-        # Should handle gracefully
+        # Tampered file should be rejected (returns None and deletes the file)
         result = load_state()
-        # May return None or corrupted data depending on platform
-        # On non-Windows (passthrough), JSON parse may fail
+        assert result is None
 
     def test_load_missing_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr("src.system_config.STATE_FILE", tmp_path / "nonexistent.bin")

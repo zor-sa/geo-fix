@@ -1,0 +1,91 @@
+{
+  "status": "needs_improvement",
+  "summary": "Overall test quality is solid with meaningful behavioral assertions and good coverage of acceptance criteria. However, several tests have weak or missing assertions, a few tests verify only mock wiring without checking real behavior, and edge case coverage has gaps in the DPAPI and watchdog modules. The install.bat tests are string-presence checks that verify file structure rather than behavior.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "empty_test",
+      "location": "test/unit/test_dpapi_state.py:29-30 (test_encrypted_differs_from_plaintext)",
+      "issue": "Test has zero assertions. It calls _dpapi_encrypt but never asserts anything about the result. On non-Windows (where tests actually run), this is a complete no-op.",
+      "recommendation": "Add assertion: `assert encrypted is not None` and `assert len(encrypted) > 0`. On non-Windows passthrough, at minimum assert `encrypted == plaintext` to document the passthrough behavior explicitly. Better: add a platform-conditional assertion that encrypted != plaintext on Windows."
+    },
+    {
+      "severity": "major",
+      "category": "empty_test",
+      "location": "test/unit/test_dpapi_state.py:66-83 (test_load_tampered_returns_none)",
+      "issue": "Test tampers with state file but has no assertion on the result. The comment says 'May return None or corrupted data depending on platform' but never checks either case. This test verifies nothing.",
+      "recommendation": "Add assertion: `assert result is None` (expected behavior per load_state implementation which catches exceptions and returns None). If platform-dependent, use conditional: on non-Windows passthrough, the tampered data may still parse or may not — assert one way and document why."
+    },
+    {
+      "severity": "major",
+      "category": "mock_only",
+      "location": "test/test_cleanup_paths.py:22-29 (test_cleanup_calls_uninstall_cert)",
+      "issue": "Tests only that mock was called with correct argument. Litmus test: if cleanup() were replaced with a no-op, the test would fail (good), but if uninstall_ca_cert had a bug in its implementation, this test would not catch it. The entire TestCleanupCallsCertRemoval class (5 tests) mocks all 4 dependencies and only verifies mock call patterns.",
+      "recommendation": "The ordering test (test_cert_removal_before_state_deletion) is valuable and justified as mock-only. But consider adding at least one integration-style test that calls cleanup() with a real tmpdir and verifies the directory is actually deleted (this already exists in TestCleanupWithRealTmpdir — good). The pure mock-call tests for uninstall_cert and delete_tmpdir are borderline; they verify wiring but not behavior. Accept as-is given the Windows-only nature of the real operations, but be aware these provide limited regression value."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "test/unit/test_install_bat.py (entire file)",
+      "issue": "All 9 tests are string/substring presence checks against the install.bat file content. They verify file structure (that certain strings exist) but not behavior (that hash verification actually works, that a mismatch causes exit). If someone changes the variable name from PYTHON_ZIP_HASH to PY_HASH, the install logic may still work but these tests break.",
+      "recommendation": "These are acceptable as regression guardrails for a batch file that cannot easily be unit-tested in a cross-platform test suite. However, they provide limited confidence. Consider marking them explicitly as 'structural validation' tests. The test_hash_mismatch_exits_nonzero and test_hash_mismatch_deletes_file tests are the most valuable here — they check consequence of mismatch."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "test/unit/test_wizard.py:56-66 (test_no_install_ca_cert_import, test_no_lambda_skip)",
+      "issue": "test_no_lambda_skip has a convoluted inline conditional that is hard to read and may not correctly flag all cases. The expression `assert 'lambda' not in content or 'mark_setup_complete' not in content.split('lambda')[1].split('\\n')[0] if 'lambda' in content else True` is fragile — it only checks the first occurrence of 'lambda' and may silently pass with True in edge cases.",
+      "recommendation": "Rewrite as a clear multi-line check: find all lines containing 'lambda', check none of them also contain 'mark_setup_complete'. This makes intent clear and handles multiple lambda occurrences."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "test/test_watchdog.py — _register_onlogon_task and _remove_onlogon_task",
+      "issue": "The watchdog module has _register_onlogon_task() and _remove_onlogon_task() functions that are not tested. run_watchdog calls _remove_onlogon_task() on crash recovery, but the test mocks cleanup without verifying the ONLOGON task removal.",
+      "recommendation": "Add a test verifying that run_watchdog calls _remove_onlogon_task after cleanup on main process death. Even as a mock-call check, this validates the crash recovery sequence includes scheduled task cleanup."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "test/test_port_selection.py — no test for RuntimeError on total bind failure",
+      "issue": "_select_port raises RuntimeError('Cannot bind any proxy port') when both requested port and auto-select fail. This error path is untested.",
+      "recommendation": "Add test: mock socket.socket to always raise OSError on bind. Assert that _select_port raises RuntimeError with the expected message."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "test/test_main.py — TestCLIParsing tests local argparse, not actual parser",
+      "issue": "TestCLIParsing creates its own argparse.ArgumentParser instead of importing the actual parser from main.py. If the real parser's argument names or flags change, these tests still pass. They test argparse itself, not the application.",
+      "recommendation": "Import and use the actual argument parser from src.main (e.g., _parse_args or extract the parser creation into a testable function). This ensures tests validate the real CLI interface."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "test/unit/test_csp.py — no test for empty nonce parameter",
+      "issue": "No test covers what happens when _modify_csp receives an empty string or None as nonce. The function should handle this gracefully.",
+      "recommendation": "Add test: _modify_csp('script-src self', '') and verify behavior (either raises or produces valid CSP without broken nonce)."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "test/unit/test_browser_path.py:18-20 (test_registry_hit_returns_path)",
+      "issue": "Test has no assertion. It calls _find_browser_path but the comment says 'May be None if Chrome not installed, which is OK' — meaning the test passes regardless of the result. This is a no-op test on non-Windows (returns None due to platform check) and has no assertion on Windows either.",
+      "recommendation": "Either add a meaningful assertion (e.g., if result is not None, assert it's a Path that ends with 'chrome.exe') or remove this test entirely. As-is, it provides zero regression protection."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 14,
+    "litmusTest": {
+      "checked": 52,
+      "passed": 46,
+      "failed": 6
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 42,
+      "integration": 10,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

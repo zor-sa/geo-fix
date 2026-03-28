@@ -92,6 +92,7 @@ class ProxyState:
 def _dpapi_encrypt(plaintext: bytes) -> bytes:
     """Encrypt data using DPAPI (user-scope). Passthrough on non-Windows."""
     if sys.platform != "win32":
+        logger.warning("DPAPI not available on this platform — state file is NOT encrypted")
         return plaintext
 
     import ctypes
