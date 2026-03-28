@@ -226,10 +226,15 @@ def _do_cleanup():
             # Signal watchdog to stop BEFORE cleanup deletes tmpdir
             _signal_watchdog_stop(_session_tmpdir, _stop_token)
             state = load_state()
+            failures = []
             if state:
-                cleanup(state)
+                failures = cleanup(state) or []
             _remove_onlogon_task()
             release_instance_lock()
+            if failures:
+                msg = "Не удалось полностью очистить:\n" + "\n".join(f"  - {f}" for f in failures)
+                msg += "\nЗапустите `geo-fix --cleanup` для повторной очистки."
+                print(msg, file=sys.stderr)
         except Exception as e:
             logger.error("Cleanup error: %s", e)
 
@@ -400,6 +405,39 @@ def main():
     # Start tray icon
     tray = GeoFixTray(preset, on_switch_country, on_stop)
     tray_thread = tray.start_threaded()
+
+    # Start monitoring loop (VPN status + watchdog health)
+    def _monitor_loop():
+        last_vpn = None
+        while not stop_event.is_set():
+            stop_event.wait(timeout=60)
+            if stop_event.is_set():
+                break
+            # Check VPN
+            try:
+                vpn = check_vpn_status()
+                if vpn == VpnStatus.NOT_DETECTED and last_vpn != VpnStatus.NOT_DETECTED:
+                    logger.warning("VPN disconnected!")
+                    print("⚠ VPN отключён! Реальный IP может быть виден.", file=sys.stderr)
+                elif vpn == VpnStatus.DETECTED and last_vpn == VpnStatus.NOT_DETECTED:
+                    logger.info("VPN reconnected")
+                    print("✓ VPN восстановлен.", file=sys.stderr)
+                last_vpn = vpn
+            except Exception as e:
+                logger.debug("VPN check error: %s", e)
+            # Check watchdog health
+            if _watchdog_proc and _watchdog_proc.poll() is not None:
+                logger.warning("Watchdog died (rc=%s), respawning...", _watchdog_proc.returncode)
+                try:
+                    from src.system_config import STATE_FILE
+                    globals()["_watchdog_proc"] = _spawn_watchdog(
+                        os.getpid(), str(STATE_FILE), _session_tmpdir, session_id, stop_token
+                    )
+                except Exception as e:
+                    logger.error("Failed to respawn watchdog: %s", e)
+
+    monitor_thread = threading.Thread(target=_monitor_loop, daemon=True, name="monitor")
+    monitor_thread.start()
 
     print(f"✓ geo-fix запущен: {preset.name_ru} ({country_code})")
     print("  Иконка в трее → правая кнопка мыши для управления")

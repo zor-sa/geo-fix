@@ -533,24 +533,61 @@ def create_firewall_rules() -> bool:
     return success
 
 
+def _list_firewall_rules_by_prefix(prefix: str) -> list:
+    """List all firewall rule names matching a prefix."""
+    try:
+        result = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "show", "rule", "name=all"],
+            capture_output=True, text=True, timeout=30
+        )
+        rules = []
+        for line in result.stdout.splitlines():
+            # netsh output: "Rule Name:                            geo-fix-webrtc-chrome-udp-3478"
+            if line.strip().startswith("Rule Name:"):
+                name = line.split(":", 1)[1].strip()
+                if name.startswith(prefix):
+                    rules.append(name)
+        return rules
+    except Exception as e:
+        logger.warning("Could not list firewall rules: %s", e)
+        return []
+
+
 def remove_firewall_rules() -> None:
-    """Remove all geo-fix firewall rules."""
+    """Remove all geo-fix firewall rules by prefix.
+
+    Finds all rules starting with FW_RULE_PREFIX via netsh query,
+    then deletes each. Falls back to fixed-list if query fails.
+    """
     if sys.platform != "win32":
         return
 
-    for browser in BROWSER_EXES:
-        for port in STUN_PORTS:
-            rule_name = f"{FW_RULE_PREFIX}-{browser.replace('.exe', '')}-udp-{port}"
+    rules = _list_firewall_rules_by_prefix(FW_RULE_PREFIX)
+    if rules:
+        for rule_name in rules:
             try:
                 subprocess.run(
                     ["netsh", "advfirewall", "firewall", "delete", "rule",
                      f"name={rule_name}"],
                     capture_output=True, text=True, timeout=10
                 )
-            except Exception:
-                pass
-
-    logger.info("Firewall rules removed")
+            except Exception as e:
+                logger.warning("Failed to delete rule %s: %s", rule_name, e)
+        logger.info("Removed %d firewall rules by prefix", len(rules))
+    else:
+        # Fallback: try known names in case netsh query failed
+        for browser in BROWSER_EXES:
+            for port in STUN_PORTS:
+                rule_name = f"{FW_RULE_PREFIX}-{browser.replace('.exe', '')}-udp-{port}"
+                try:
+                    subprocess.run(
+                        ["netsh", "advfirewall", "firewall", "delete", "rule",
+                         f"name={rule_name}"],
+                        capture_output=True, text=True, timeout=10
+                    )
+                except Exception:
+                    pass
+        logger.info("Firewall rules removed (fallback method)")
 
 
 # === Cleanup ===
@@ -629,28 +666,55 @@ def cleanup(state: Optional[ProxyState] = None) -> None:
         return
 
     logger.info("Running cleanup...")
+    failures = []
 
     # Remove CA cert BEFORE deleting state (needs thumbprint)
-    uninstall_ca_cert(state.ca_thumbprint)
+    try:
+        uninstall_ca_cert(state.ca_thumbprint)
+    except Exception as e:
+        failures.append(f"CA cert removal: {e}")
+        logger.error("Failed to remove CA cert: %s", e)
 
     # Delete session tmpdir (contains CA private key)
-    delete_session_tmpdir(state.session_tmpdir)
+    try:
+        delete_session_tmpdir(state.session_tmpdir)
+    except Exception as e:
+        failures.append(f"Session tmpdir deletion: {e}")
+        logger.error("Failed to delete session tmpdir: %s", e)
 
     # Restore proxy
-    original = {
-        "ProxyEnable": state.original_proxy_enable or 0,
-        "ProxyServer": state.original_proxy_server or "",
-        "ProxyOverride": state.original_proxy_override or "",
-    }
-    unset_wininet_proxy(original)
+    try:
+        original = {
+            "ProxyEnable": state.original_proxy_enable or 0,
+            "ProxyServer": state.original_proxy_server or "",
+            "ProxyOverride": state.original_proxy_override or "",
+        }
+        unset_wininet_proxy(original)
+    except Exception as e:
+        failures.append(f"Proxy restore: {e}")
+        logger.error("Failed to restore proxy: %s", e)
 
     # Restore Firefox
-    if state.firefox_prefs_modified:
-        unset_firefox_proxy(state.firefox_prefs_backup)
+    try:
+        if state.firefox_prefs_modified:
+            unset_firefox_proxy(state.firefox_prefs_backup)
+    except Exception as e:
+        failures.append(f"Firefox restore: {e}")
+        logger.error("Failed to restore Firefox: %s", e)
 
     # Remove firewall rules (unconditional — rules are created every session)
-    remove_firewall_rules()
+    try:
+        remove_firewall_rules()
+    except Exception as e:
+        failures.append(f"Firewall rules removal: {e}")
+        logger.error("Failed to remove firewall rules: %s", e)
 
     # Delete state file
     delete_state()
-    logger.info("Cleanup complete")
+
+    if failures:
+        logger.warning("Cleanup completed with %d failure(s): %s", len(failures), "; ".join(failures))
+    else:
+        logger.info("Cleanup complete")
+
+    return failures
