@@ -1,0 +1,202 @@
+{
+  "meta": {
+    "reviewer": "skeptic-validator",
+    "date": "2026-03-27",
+    "spec_file": "work/geo-fix/tech-spec.md",
+    "user_spec_file": "work/geo-fix/user-spec.md",
+    "mode": "tech-spec",
+    "note": "New project — no existing codebase. Verification focuses on external claims: packages, tools, APIs, and spec consistency."
+  },
+  "summary": {
+    "total_claims": 22,
+    "verified_ok": 15,
+    "warnings": 5,
+    "contradictions": 2,
+    "verdict": "CONDITIONALLY_APPROVED"
+  },
+  "findings": [
+    {
+      "id": "F-01",
+      "category": "package",
+      "claim": "mitmproxy >= 10.0",
+      "status": "VERIFIED",
+      "detail": "mitmproxy is real, on PyPI. Latest is 12.2.1 (released 2025-11-24). Version 10.0+ has been available since August 2023. Constraint '>= 10.0' is satisfied by current releases."
+    },
+    {
+      "id": "F-02",
+      "category": "package",
+      "claim": "pystray >= 0.19",
+      "status": "VERIFIED",
+      "detail": "pystray is real, on PyPI. Latest is 0.19.5 (released 2023-09-17). Version 0.19+ is available. pystray supports Windows system tray with context menus and submenus via Icon, Menu, MenuItem classes."
+    },
+    {
+      "id": "F-03",
+      "category": "package",
+      "claim": "Pillow >= 10.0",
+      "status": "VERIFIED",
+      "detail": "Pillow is real, on PyPI. Latest is 12.1.1. Version 10.0+ has been available since July 2023. Required by pystray for icon image handling."
+    },
+    {
+      "id": "F-04",
+      "category": "package",
+      "claim": "requests >= 2.31",
+      "status": "VERIFIED",
+      "detail": "requests is real, on PyPI. Latest is 2.33.0. Version 2.31+ has been available. Used in health_check.py for HTTP calls."
+    },
+    {
+      "id": "F-05",
+      "category": "package",
+      "claim": "pyinstaller >= 6.0",
+      "status": "VERIFIED",
+      "detail": "pyinstaller is real, on PyPI. Latest is 6.19.0. Version 6.0+ is available. Supports Python 3.8-3.14."
+    },
+    {
+      "id": "F-06",
+      "category": "windows_tool",
+      "claim": "certutil.exe installs CA cert to CurrentUser store",
+      "status": "VERIFIED",
+      "detail": "certutil.exe is a real Windows built-in tool. The command 'certutil -addstore -user Root <cert.pem>' installs to the CurrentUser Root store. Crucially: adding to CurrentUser store does NOT require admin elevation, only LocalMachine store requires admin. The tech-spec claim that 'CA cert install may require admin confirmation' (from D5) is inaccurate for CurrentUser — it will succeed without UAC."
+    },
+    {
+      "id": "F-07",
+      "category": "windows_tool",
+      "claim": "netsh.exe manages firewall rules for WebRTC STUN blocking",
+      "status": "VERIFIED_WITH_WARNING",
+      "detail": "netsh.exe (specifically 'netsh advfirewall firewall add rule') is a real Windows built-in tool that can create per-application firewall rules blocking specific UDP ports. However: modifying Windows Firewall rules via netsh ALWAYS requires admin elevation (UAC prompt). The tech-spec states 'admin required at setup' (D3), which is correct, but this may conflict with NFR-1 in user-spec which says 'no admin rights' (with caveat 'допустимо: CA cert may require confirmation'). The user-spec does NOT explicitly list firewall rule creation as an admin-required exception.",
+      "severity": "WARNING"
+    },
+    {
+      "id": "F-08",
+      "category": "windows_tool",
+      "claim": "winreg Python module for WinINET registry (HKCU)",
+      "status": "VERIFIED",
+      "detail": "winreg is a real Python standard library module on Windows. The registry path HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Internet Settings with values ProxyEnable (DWORD), ProxyServer (String) is the correct WinINET proxy configuration location. HKCU writes do NOT require admin elevation."
+    },
+    {
+      "id": "F-09",
+      "category": "python_builtin",
+      "claim": "tkinter is built-in for setup wizard",
+      "status": "VERIFIED",
+      "detail": "tkinter is included in the Python standard library on Windows. No installation required. Suitable for native-looking Windows dialogs as claimed."
+    },
+    {
+      "id": "F-10",
+      "category": "mitmproxy_api",
+      "claim": "mitmproxy addon API: class with request/response hooks, flow.request.headers, flow.response.headers, flow.response.content",
+      "status": "VERIFIED",
+      "detail": "The mitmproxy addon API is real and works as described. Class-based addons with request(self, flow) and response(self, flow) hooks are the current official pattern. flow.request.headers and flow.response.headers provide dict-like header access. flow.response.content provides binary response body. mitmproxy handles gzip/brotli decompression automatically when accessing .content (as opposed to .raw_content)."
+    },
+    {
+      "id": "F-11",
+      "category": "mitmproxy_behavior",
+      "claim": "mitmproxy handles TLS termination, HTTP/2, gzip/brotli decoding, certificate generation",
+      "status": "VERIFIED",
+      "detail": "All four capabilities are real and documented features of mitmproxy. Certificate generation happens automatically on first run into ~/.mitmproxy/ as stated in the Security Considerations section."
+    },
+    {
+      "id": "F-12",
+      "category": "mitmproxy_config",
+      "claim": "mitmproxy CA key stored in ~/.mitmproxy/",
+      "status": "VERIFIED",
+      "detail": "Confirmed: mitmproxy generates CA keys in ~/.mitmproxy/ by default on first run. The cert file is ~/.mitmproxy/mitmproxy-ca-cert.pem. This path is accurate."
+    },
+    {
+      "id": "F-13",
+      "category": "javascript_api",
+      "claim": "JS injection overrides: Intl.DateTimeFormat, Date.getTimezoneOffset, Temporal.Now.timeZoneId, navigator.geolocation, navigator.language(s), RTCPeerConnection",
+      "status": "VERIFIED_WITH_WARNING",
+      "detail": "Intl.DateTimeFormat, Date.getTimezoneOffset, navigator.geolocation, navigator.language/languages, and RTCPeerConnection are all valid browser APIs overridable via Object.defineProperty. HOWEVER: Temporal.Now.timeZoneId is a Temporal API feature that only reached Chrome in v145 (January/February 2026). As of the spec date (2026-03-27), Chrome 145+ users will have Temporal — the spec's inclusion of Temporal override is forward-looking and now relevant, but the tech-spec should acknowledge this is a new API and may not be present in older Chrome versions still in use.",
+      "severity": "WARNING"
+    },
+    {
+      "id": "F-14",
+      "category": "javascript_technique",
+      "claim": "Object.defineProperty makes overrides non-enumerable and harder to detect (D8)",
+      "status": "VERIFIED",
+      "detail": "Object.defineProperty is the correct and standard approach for stealthy API overrides. Setting configurable:false prevents re-override. Using IIFE pattern is correct for scope isolation. These are established anti-fingerprinting techniques used by tools like CreepJS test harnesses."
+    },
+    {
+      "id": "F-15",
+      "category": "webrtc_ports",
+      "claim": "Firewall rules blocking UDP ports 3478, 5349, 19302-19309 for WebRTC STUN blocking",
+      "status": "VERIFIED_WITH_WARNING",
+      "detail": "Ports 3478 and 5349 are the standard STUN/TURN ports (IANA registered). Port 19302 is confirmed as Google's primary STUN port. However, the range 19302-19309 is only partially confirmed: sources confirm 19302-19305 for Google Voice/WebRTC. Ports 19306-19309 are not confirmed in public documentation as active Google STUN ports. The range may be overly broad (blocking unused ports is harmless) or may miss actual ports. This is a low-severity concern.",
+      "severity": "WARNING"
+    },
+    {
+      "id": "F-16",
+      "category": "build",
+      "claim": "PyInstaller --onedir starts instantly; --onefile has slow startup due to extraction (D7)",
+      "status": "VERIFIED",
+      "detail": "Confirmed. onefile bundles everything into a single exe that must extract to a temp directory on each launch (adding 2-3+ seconds). onedir creates a folder with exe + dependencies that loads nearly as fast as the original Python script. The design decision is well-founded."
+    },
+    {
+      "id": "F-17",
+      "category": "consistency",
+      "claim": "FR-2 preset: US timezone America/New_York, coords 38.90 -77.04 (Washington DC), language en-US",
+      "status": "VERIFIED",
+      "detail": "America/New_York is a valid IANA timezone. Coordinates 38.90, -77.04 are accurate for Washington DC. en-US is the correct BCP47 language tag. Data is internally consistent."
+    },
+    {
+      "id": "F-18",
+      "category": "consistency",
+      "claim": "FR-2 preset: DE timezone Europe/Berlin, coords 52.52 13.41 (Berlin), language de-DE",
+      "status": "VERIFIED",
+      "detail": "Europe/Berlin is a valid IANA timezone. Coordinates 52.52, 13.41 are accurate for Berlin, Germany. de-DE is the correct BCP47 language tag. Data is internally consistent."
+    },
+    {
+      "id": "F-19",
+      "category": "consistency",
+      "claim": "FR-2 preset: NL timezone Europe/Amsterdam, coords 52.37 4.90 (Amsterdam), language nl-NL",
+      "status": "VERIFIED",
+      "detail": "Europe/Amsterdam is a valid IANA timezone. Coordinates 52.37, 4.90 are accurate for Amsterdam, Netherlands. nl-NL is the correct BCP47 language tag. Data is internally consistent."
+    },
+    {
+      "id": "F-20",
+      "category": "consistency",
+      "claim": "FR-2 preset: GB timezone Europe/London, coords 51.51 -0.13 (London), language en-GB",
+      "status": "VERIFIED",
+      "detail": "Europe/London is a valid IANA timezone. Coordinates 51.51, -0.13 are accurate for London, UK. en-GB is the correct BCP47 language tag. Data is internally consistent."
+    },
+    {
+      "id": "F-21",
+      "category": "spec_contradiction",
+      "claim": "D2 (tech-spec): Chrome/Edge only, no Firefox. NFR-3 (user-spec): works for any browser (Chrome, Edge, Firefox) and desktop apps using system proxy.",
+      "status": "CONTRADICTION",
+      "detail": "The user-spec NFR-3 explicitly states the tool should work for Chrome, Edge, Firefox, and desktop apps using system proxy. The tech-spec D2 explicitly removes Firefox support, citing NSS CA store and proxy configuration complexity. The user-spec 'Limitations' section does note 'Firefox requires separate proxy and CA setup', suggesting the user may have accepted this. However, NFR-3 is stated as a non-functional requirement, not a limitation. The tech-spec does not document that this was a deliberate scope reduction from NFR-3. This inconsistency should be explicitly acknowledged and reconciled in the tech-spec.",
+      "severity": "CONTRADICTION",
+      "recommendation": "Add a note in D2 that explicitly references NFR-3 and records the decision to scope down, or update the user-spec to remove Firefox from NFR-3."
+    },
+    {
+      "id": "F-22",
+      "category": "spec_contradiction",
+      "claim": "D5/NFR-1: Setup wizard handles CA cert install 'with explanation'; NFR-1 says CA cert install 'may require admin confirmation' but firewall rules (which DO require admin) are not called out as an admin-required exception in user-spec.",
+      "status": "CONTRADICTION",
+      "detail": "The tech-spec D3 is clear that firewall rules require admin elevation (UAC). The user-spec NFR-1 says 'допустимо: CA cert may require confirmation' but does NOT list firewall rule creation as an acceptable admin-required step. Since certutil to CurrentUser Root does NOT require admin (verified: F-06), the only actually admin-requiring operation is netsh firewall rules. The user-spec NFR-1 is therefore more restrictive than the tech-spec assumes. The user-spec limitations section mentions 'WebRTC via JS less reliable but no admin required' which suggests the user may prefer a no-admin WebRTC approach. The tech-spec chose firewall rules (admin required) over JS-only (no admin), and this preference is not validated against the user-spec.",
+      "severity": "CONTRADICTION",
+      "recommendation": "Confirm with user that admin elevation for firewall rule creation (netsh) is acceptable, and explicitly add it as an exception in NFR-1 in the user-spec, or fall back to JS-only WebRTC override."
+    }
+  ],
+  "verified_claims_summary": [
+    "All 5 Python packages (mitmproxy, pystray, Pillow, requests, pyinstaller) exist on PyPI at the specified minimum versions",
+    "certutil.exe and netsh.exe are real Windows built-in tools with the described capabilities",
+    "winreg Python module exists and the WinINET registry path/values are correct",
+    "tkinter is a real Python built-in (no installation needed)",
+    "mitmproxy addon API (class-based, request/response hooks) works as described",
+    "mitmproxy CA path ~/.mitmproxy/ is accurate",
+    "All 4 country presets have internally consistent IANA timezone, GPS coordinates, and BCP47 language tags",
+    "PyInstaller onedir startup performance advantage over onefile is real and documented",
+    "Object.defineProperty override technique is valid and appropriate for the stated goal"
+  ],
+  "warnings_summary": [
+    "certutil to CurrentUser Root does NOT require admin elevation (contrary to D5's implication) — this is actually GOOD NEWS for NFR-1",
+    "netsh firewall rules ALWAYS require admin elevation — only partially covered in user-spec NFR-1",
+    "Google STUN port range 19302-19309 is only confirmed to 19302-19305; 19306-19309 are unconfirmed",
+    "Temporal.Now.timeZoneId only available in Chrome 145+ (Jan 2026); older Chrome will not have it — graceful fallback needed",
+    "Firefox scope reduction (D2) is not reconciled against NFR-3 in user-spec"
+  ],
+  "contradictions_summary": [
+    "NFR-3 (user-spec) requires Firefox support; D2 (tech-spec) drops Firefox — not explicitly reconciled",
+    "NFR-1 (user-spec) only calls out CA cert as acceptable admin step; netsh firewall rules (always admin) are not listed as an acceptable exception"
+  ]
+}

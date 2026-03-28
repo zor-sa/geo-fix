@@ -1,0 +1,71 @@
+{
+  "status": "changes_required",
+  "summary": "The testing strategy has a reasonable skeleton but is inadequate for a size-L feature. Critical gaps include: no crash-recovery or stale-state testing despite an explicit state-file mechanism in the spec, no concurrent-launch tests, no test coverage for system_config.py or tray.py, smoke commands that verify only import paths (not behavior), and no verifiable mapping from E2E tests to individual acceptance criteria AC-1 through AC-7. Several AC items (AC-3 DNS, AC-4 IP, AC-5 Google access) have no automated test path at all. Edge cases around DST transitions, CSP bypass detection, and certificate-pinned sites are entirely unaddressed.",
+  "findings": [
+    {
+      "severity": "critical",
+      "description": "No crash-recovery or stale-state test. The tech spec explicitly states: 'A state file tracks active configuration. On next launch, if stale state detected, cleanup runs first.' (Security Considerations). There is no test that simulates a crash mid-run, leaves proxy/registry in a dirty state, and verifies that the next launch cleans up correctly. This is the most dangerous user-facing failure mode.",
+      "fix": "Add an integration test: start geo-fix, kill it with SIGKILL (simulated crash), re-launch, verify WinINET proxy settings are reverted and mitmproxy is not double-started. Add a unit test for the stale-state detection logic in main.py."
+    },
+    {
+      "severity": "critical",
+      "description": "No concurrent-launch test. Nothing prevents a user double-clicking a shortcut while geo-fix is already running. Launching twice could start two mitmproxy instances on port 8080, corrupting the proxy state. There is no test for this scenario and no spec mention of a lock/guard mechanism.",
+      "fix": "Define and test a single-instance guard (PID file or named mutex). Add a test: launch geo-fix, attempt a second launch, verify it fails gracefully with a human-readable error rather than a port-bind crash."
+    },
+    {
+      "severity": "critical",
+      "description": "AC-3 (DNS leak) and AC-4 (IP corresponds to country) have no automated test path. The E2E smoke tests mention creepjs and browserleaks but do not include dnsleaktest.com or ipapi.co. DNS leak testing against dnsleaktest.com is listed in the E2E section as a plain bullet ('Check dnsleaktest.com for DNS leaks') with no assertion, no automation approach, and no failure criteria.",
+      "fix": "Either automate DNS-leak checking via a headless browser session against dnsleaktest.com (or an equivalent API endpoint), or explicitly mark AC-3 and AC-4 as manual-only in the test plan with documented step-by-step instructions and expected output. Currently they are neither."
+    },
+    {
+      "severity": "critical",
+      "description": "AC-5 (Google services accessible) has no test at all — not automated, not in the manual plan. notebooklm.google.com and gemini.google.com are the primary end-user goals. The test strategy never mentions verifying these endpoints are reachable and functional through the proxy.",
+      "fix": "Add to the manual verification section: explicit steps to open notebooklm.google.com and gemini.google.com, check that the page loads without geo-block redirect, and confirm the UI is in the target language. Mark as a required sign-off gate in the QA task."
+    },
+    {
+      "severity": "major",
+      "description": "system_config.py has no unit tests beyond registry-key generation. The module handles CA certificate installation (certutil), firewall rule creation/removal (netsh), and registry revert. The test strategy only mentions 'verify registry key generation (mock winreg)'. Firewall rule idempotency, certutil error handling, and cleanup-on-failure paths are untested.",
+      "fix": "Add unit tests: (1) mock subprocess calls to certutil and netsh, verify correct arguments are passed for install and uninstall; (2) verify that if certutil fails mid-run, the cleanup function still removes any partial registry changes; (3) test that firewall rules are correctly scoped to chrome.exe and msedge.exe, not system-wide."
+    },
+    {
+      "severity": "major",
+      "description": "tray.py has no tests of any kind — not even smoke. The tray icon, country switching via menu, and the shutdown path through the tray are untested. Country switching via tray is also a separate code path from CLI restart and could diverge.",
+      "fix": "Add at minimum: (1) a unit test that instantiates the tray object with a mock pystray backend and verifies menu items are generated correctly for all 4 presets; (2) a test that verifying calling the 'switch country' menu item updates the active preset and triggers proxy reload; (3) a test that 'Выключить' triggers the shutdown sequence."
+    },
+    {
+      "severity": "major",
+      "description": "Task smoke commands verify imports only, not behavior. Task 3 smoke: `GeoFixAddon.__init__.__code__` only confirms the class exists in the module. Task 5 smoke: `print('health check loads OK')` confirms import, not VPN detection logic. These are effectively no-ops as quality gates.",
+      "fix": "Replace with behavior-asserting checks. For proxy_addon: instantiate GeoFixAddon with a US preset, call its response_hook with a synthetic HTML response, and assert the output contains the injected JS string. For health_check: mock a non-Russian IP response and assert check_vpn_status returns True; mock a Russian IP and assert it returns False."
+    },
+    {
+      "severity": "major",
+      "description": "Country switching under load is not tested. When the user switches country via the tray while the browser has active connections, the proxy addon must swap the preset atomically. If the preset reference is not thread-safe, in-flight requests could get a mixed preset (e.g., US timezone with DE language). No concurrency test exists for this.",
+      "fix": "Add a unit test that simulates concurrent requests through the proxy addon while a country switch is triggered. Verify that each response gets a consistent, single-country preset (no mixed-country responses)."
+    },
+    {
+      "severity": "major",
+      "description": "DST (Daylight Saving Time) transition is not tested. The JS payload must dynamically compute timezone offset based on IANA zone name (spec D8: 'DST-aware'). No test verifies that the computed offset is correct for a date in summer DST vs. a date in winter standard time for each of the 4 presets.",
+      "fix": "Add unit tests for inject.js (via Node.js or Playwright) that: (1) set the system date to a known DST-active date (e.g., July 15) and verify getTimezoneOffset() returns the summer offset; (2) set date to a DST-inactive date (e.g., December 15) and verify winter offset. Cover all 4 presets, as US/DE/NL/GB have different DST schedules."
+    },
+    {
+      "severity": "minor",
+      "description": "No test for JS injection into chunked/streaming HTML responses. The proxy_addon must handle cases where the HTML `<head>` tag spans multiple TCP chunks. The spec notes 'must handle gzip/brotli encoding, partial HTML' but the testing strategy does not include a test with a partial/chunked HTML response.",
+      "fix": "Add a proxy_addon unit test that sends an HTML response split at the `<head>` boundary across two chunks and verifies the injected JS appears in the correct position in the reassembled output."
+    },
+    {
+      "severity": "minor",
+      "description": "No test for the setup wizard's completion-state persistence. The wizard must 'remember setup completion state' (Task 6 description) so it does not re-run on every launch. There is no test verifying this flag is set after successful completion and respected on subsequent launches.",
+      "fix": "Add a unit test: run the wizard completion logic with mocked system calls, verify the completion flag is written. Then simulate a second launch and verify the wizard does not show again."
+    },
+    {
+      "severity": "minor",
+      "description": "No negative-path E2E test: what happens when the proxy runs but the VPN is NOT active? The health check warns the user (D6), but there is no test verifying the warning actually surfaces and that the tool does not silently proceed with a real IP exposed.",
+      "fix": "Add a smoke/integration test: mock check_vpn_status to return False (no VPN), launch geo-fix, verify a warning is displayed to the user and the tool either halts or prompts before continuing."
+    },
+    {
+      "severity": "minor",
+      "description": "Manual verification plan is thin and incomplete. The plan lists 4 bullets (NotebookLM/Gemini access, tray visual check, country switching, clean shutdown) with no documented expected outcomes, no step-by-step instructions, and no explicit pass/fail criteria. For a non-technical end user or a QA reviewer this is insufficient.",
+      "fix": "Expand manual verification into a checklist: pre-conditions (VPN active, browser closed), numbered steps for each AC, expected outcome for each step, and a sign-off field. Align the checklist 1-to-1 with AC-1 through AC-7."
+    }
+  ]
+}
