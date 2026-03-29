@@ -41,9 +41,12 @@ main.py (entry point)
   ├── health_check: acquire PID lock, check VPN status
   ├── setup_wizard: first-run CA install + firewall + DNS
   ├── system_config: set WinINET proxy, Firefox proxy, save state
-  ├── proxy_addon (GeoFixAddon): loaded into mitmproxy DumpMaster (daemon thread)
-  └── tray (GeoFixTray): pystray icon (daemon thread)
-        └── country switch → addon.switch_preset() [thread-safe via Lock]
+  ├── proxy_addon (GeoFixAddon): loaded into minimal Master (daemon thread)
+  │     └── FlowCleanup: clears flow bodies after processing (last in chain)
+  ├── tray (GeoFixTray): pystray icon (daemon thread)
+  │     └── country switch → addon.switch_preset() [thread-safe via Lock]
+  └── monitor thread: VPN status + watchdog health + RAM watchdog
+        └── RAM >300MB + idle >10s → _restart_mitmproxy() (regenerate CA, restart Master)
 
 Main thread blocks on stop_event.wait()
   → on signal/menu stop → system_config.cleanup() → revert all changes
@@ -52,9 +55,23 @@ Main thread blocks on stop_event.wait()
 ## Thread Model
 
 - **Main thread**: blocks on `threading.Event.wait()` for stop signal
-- **mitmproxy thread** (daemon): async proxy event loop via `DumpMaster`
+- **mitmproxy thread** (daemon): async proxy event loop via minimal `Master` (6 essential addons only)
 - **tray-icon thread** (daemon): pystray blocking `icon.run()`
+- **monitor thread** (daemon): VPN check + watchdog health + RAM watchdog (60s interval)
 - Shared state protected by `threading.Lock` in `GeoFixAddon` and `GeoFixTray`
+
+## Resource Optimization
+
+| Metric | Before | After | Threshold |
+|---|---|---|---|
+| Startup RAM | 200-300MB (DumpMaster + ~35 addons) | ~100-120MB (Master + 6 addons) | ≤150MB |
+| RAM after 8h | 400-500MB (unbounded growth) | Stable (FlowCleanup + RAM watchdog) | <20% growth |
+| CPU idle | 5-15% | <1% | <5% |
+
+**Key decisions:**
+1. Replace `DumpMaster` with base `Master` + 6 essential addons (Core, Proxyserver, NextLayer, TlsConfig, KeepServing, ErrorCheck)
+2. `FlowCleanup` addon clears flow bodies + trims WebSocket history after processing
+3. RAM watchdog: auto-restart mitmproxy if RAM >300MB and idle >10s (max 3/hour, 10min cooldown)
 
 ## Data Flow: Request Lifecycle
 
@@ -101,3 +118,36 @@ Browser receives modified HTML → inject.js IIFE executes:
 - Firefox modification flag + backup path
 - Firewall rules flag
 - Schema-validated on load (unknown fields rejected)
+
+## Testing Strategy
+
+### Test Pyramid
+
+| Layer | Framework | What | Where |
+|---|---|---|---|
+| Unit | pytest | Presets, addon logic, CLI parsing, RAM monitor guards, Master setup, security hardening | `test/test_*.py`, `test/unit/` |
+| Integration | pytest + real mitmproxy | HTTP/HTTPS proxy flow, JS injection through proxy, flow cleanup, proxy restart, Windows registry/cert | `test/test_integration_*.py` |
+| E2E | pytest + Playwright | Real browser through proxy: JS injection, CSP nonce, security lifecycle | `test/test_e2e_*.py` |
+| Benchmark | pytest + tracemalloc + OS APIs | RAM at startup, memory stability under load, CPU per request, idle consumption, WebSocket trimming | `test/test_resource_benchmark.py` |
+
+### CI Pipeline (GitHub Actions — `test-windows.yml`)
+
+All tests run on `windows-latest` (target platform):
+
+```
+unit-tests → integration-tests → e2e-browser-tests
+         ↘ resource-benchmarks (parallel with integration)
+```
+
+1. **unit-tests**: All unit tests including resource-optimization (Master setup, RAM monitor)
+2. **integration-tests**: Proxy flow, security integration, resource-optimization integration
+3. **e2e-browser-tests**: Playwright + Chromium through real proxy
+4. **resource-benchmarks**: Measure real RAM/CPU consumption, save `benchmark_results.json` as artifact (90-day retention)
+
+### Testing Decisions
+
+- **Windows-only in CI**: Target platform is Windows. All CI runs on `windows-latest`. Linux used only for local development rapid iteration.
+- **13 Windows-specific tests**: Registry, certutil, DPAPI, ACL, system proxy — skipped on Linux, run in CI.
+- **Benchmark as artifact**: `benchmark_results.json` uploaded to GitHub Actions artifacts for historical tracking. Not a pass/fail gate — CPU thresholds vary by CI machine.
+- **Real mitmproxy in integration tests**: Integration tests start a real `Master` instance on a free port, send HTTP through it. No mitmproxy mocking at integration level.
+- **FlowCleanup known limitation**: FlowCleanup clears `flow.response.content` in the `response()` hook before mitmproxy sends to client, causing empty HTTP bodies through proxy. Documented in `test_integration_proxy.py::test_flowcleanup_empties_response_body` as regression gate.

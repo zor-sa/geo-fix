@@ -9,3 +9,4 @@ build/*.spec
 *.key
 credentials.json
 secrets/
+benchmark_results.json
