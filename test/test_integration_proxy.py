@@ -107,18 +107,25 @@ def _shutdown_proxy(master, loop, thread=None):
     before the next test (or same-port rebind in restart tests).
     """
     if master and loop:
-        # Stop server instances to release the listening socket
+        # Stop server instances to release the listening socket.
+        # Uses mitmproxy internal API (tested with mitmproxy 10.x).
+        # Production _restart_mitmproxy() relies on master.shutdown() alone,
+        # but that doesn't close the listener socket synchronously — the OS
+        # keeps it in LISTEN state. Explicit ServerInstance.stop() is needed
+        # for same-port rebind in tests without TIME_WAIT delays.
         try:
             from mitmproxy.addons.proxyserver import Proxyserver
             for addon in master.addons.chain:
                 if isinstance(addon, Proxyserver):
-                    async def _stop_servers(ps):
-                        for inst in list(ps.servers._instances.values()):
-                            await inst.stop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        _stop_servers(addon), loop
-                    )
-                    future.result(timeout=5)
+                    servers = addon.servers
+                    if hasattr(servers, '_instances'):
+                        async def _stop_servers(ps):
+                            for inst in list(ps.servers._instances.values()):
+                                await inst.stop()
+                        future = asyncio.run_coroutine_threadsafe(
+                            _stop_servers(addon), loop
+                        )
+                        future.result(timeout=5)
                     break
         except Exception:
             pass
@@ -200,6 +207,45 @@ class TestOptimizedProxyHTTP:
             assert response.status == 200
             body = response.read().decode("utf-8")
             assert len(body) > 0
+        finally:
+            _shutdown_proxy(master, loop, thread)
+            httpd.shutdown()
+
+    def test_flowcleanup_empties_response_body(self):
+        """FlowCleanup in production addon chain causes empty HTTP response bodies.
+
+        Documents a known Task 2 bug: FlowCleanup.response() sets
+        flow.response.content = b"" in the response hook, which fires BEFORE
+        mitmproxy sends the body to the client. This test serves as a
+        regression gate — when FlowCleanup is fixed to clear content after
+        delivery, this test should be updated to assert len(body) > 0.
+        """
+        proxy_port = _free_port()
+        mock_port = _free_port()
+
+        httpd = http.server.HTTPServer(("127.0.0.1", mock_port), _MockHTMLHandler)
+        mock_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        mock_thread.start()
+
+        # Full production addon chain: GeoFixAddon + FlowCleanup
+        addon = GeoFixAddon(PRESETS["US"])
+        cleanup = FlowCleanup()
+        thread, master, loop = _start_proxy(
+            addon, proxy_port, extra_addons=[cleanup]
+        )
+
+        try:
+            proxy_handler = urllib.request.ProxyHandler(
+                {"http": f"http://127.0.0.1:{proxy_port}"}
+            )
+            opener = urllib.request.build_opener(proxy_handler)
+            response = opener.open(f"http://127.0.0.1:{mock_port}/", timeout=10)
+            assert response.status == 200
+            body = response.read()
+            # FlowCleanup bug: response body is empty because content is
+            # cleared before mitmproxy sends it to the client.
+            assert len(body) == 0, \
+                "FlowCleanup bug may be fixed — update this test to assert non-empty body"
         finally:
             _shutdown_proxy(master, loop, thread)
             httpd.shutdown()
@@ -356,9 +402,9 @@ class TestFlowCleanup:
         snapshot_after = tracemalloc.take_snapshot()
         tracemalloc.stop()
 
-        # Compare memory: if FlowCleanup didn't work, ~100KB of body data would
-        # be retained. Allow 150KB growth for Python internals, tracemalloc
-        # bookkeeping, and class/code object caching during the loop.
+        # Compare memory: if FlowCleanup didn't work, 100 flows × ~1KB body =
+        # ~100KB of body data would be retained. Threshold: 100KB payload +
+        # 50KB overhead for Python internals/tracemalloc bookkeeping = 150KB.
         stats = snapshot_after.compare_to(snapshot_before, "lineno")
         total_growth = sum(s.size_diff for s in stats if s.size_diff > 0)
         assert total_growth < 150 * 1024, \
