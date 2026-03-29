@@ -149,6 +149,17 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `pytest test/test_integration_proxy.py -v` → 7 passed
 - `pytest test/ -x` → 244 passed, 13 skipped
 
+## Task 6: Code Audit
+
+**Status:** Done
+**Commit:** 8fe80e7
+**Agent:** auditor-code
+**Summary:** Full code audit of src/main.py, src/proxy_addon.py, src/presets.py across all 11 review dimensions. Found 0 critical, 0 major (2 initially major downgraded to minor on analysis), 4 minor, 2 nitpick issues. All cross-component interactions verified correct: addon ordering, GeoFixAddon reuse across restarts, restart sequence, idle guard thread safety, rate limiting state persistence. Verdict: PASS WITH NOTES.
+**Deviations:** None.
+
+**Verification:**
+- Audit report → [logs/working/task-6/code-audit.md]
+
 ## Task 7: Security Audit
 
 **Status:** Done
