@@ -24,12 +24,7 @@ import pytest
 # Skip on non-Windows for registry/certutil tests
 WIN_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
 
-
-def _free_port():
-    """Get a free port from the OS."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+from test.conftest import get_free_port as _free_port
 
 
 class TestProxyStartsAndInjects:
@@ -139,9 +134,10 @@ class TestCACertificate:
         from src.system_config import MITMPROXY_CA_CERT
 
         if not MITMPROXY_CA_CERT.exists():
-            # Generate cert by briefly starting mitmproxy with TlsConfig
+            # Generate cert by briefly running mitmproxy so TlsConfig.running() fires
             try:
                 loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
                 from mitmproxy.options import Options
                 from mitmproxy.master import Master
                 from mitmproxy.addons.core import Core
@@ -152,8 +148,14 @@ class TestCACertificate:
                 opts = Options(listen_host="127.0.0.1", listen_port=port)
                 master = Master(opts, event_loop=loop)
                 master.addons.add(Core(), Proxyserver(), TlsConfig())
-                time.sleep(1)
-                master.shutdown()
+
+                async def _run_briefly():
+                    try:
+                        await asyncio.wait_for(master.run(), timeout=3.0)
+                    except (asyncio.TimeoutError, SystemExit):
+                        pass
+
+                loop.run_until_complete(_run_briefly())
             except Exception:
                 pass
 
