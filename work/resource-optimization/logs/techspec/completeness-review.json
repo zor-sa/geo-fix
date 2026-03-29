@@ -1,0 +1,72 @@
+{
+  "status": "pass",
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 20,
+  "requirements_covered": 18,
+  "requirements_partial": 2,
+  "requirements_missing": 0,
+  "findings": [
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-18: Application must work on Windows 10/11 with Python 3.12+",
+      "detail": "Tech-spec mentions a Linux fallback path (/proc/self/status) for RAM monitoring for testing purposes, which shows cross-platform awareness. However, there is no explicit statement that the overall solution has been validated against Python 3.12+ constraints (e.g., no deprecated APIs used in mitmproxy.master.Master direct instantiation). Decision 6 mentions Windows-specific ctypes API with Linux fallback but does not address Python 3.12 compatibility specifically.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-19 / US-20: PyInstaller build must continue to work; compatibility with desktop shortcuts and install.bat",
+      "detail": "Tech-spec does not mention PyInstaller build or install compatibility. Switching from DumpMaster to base Master with manually specified addons changes import paths (mitmproxy.addons.core, mitmproxy.addons.next_layer, mitmproxy.proxy.server, etc.). PyInstaller hidden imports or spec file may need updating. This is a real integration risk that is absent from Risks section and no task addresses it.",
+      "severity": "major"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-8: RAM auto-restart preserves state (current preset, JS payload cache)",
+      "detail": "Acceptance criterion in tech-spec states 'Proxy restart preserves GeoFixAddon state (current preset, JS payload cache)' but no task explicitly owns this. Task 3 describes restarting the mitmproxy thread and mentions 'Restart: shutdown old master → create new master → re-add addons' with GeoFixAddon reuse. The mechanism for reusing GeoFixAddon across restarts (passing the same instance vs re-creating) is not specified in any task or in the Architecture section. This is a non-trivial correctness requirement — a fresh GeoFixAddon would lose the active preset and cached payload.",
+      "severity": "major"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-13: On main process crash, watchdog performs cleanup within 10 seconds",
+      "detail": "Decision 5 (keep watchdog as subprocess) confirms watchdog is unchanged. However, the proxy restart feature in Task 3 creates a new code path where the mitmproxy thread is stopped and restarted from within the main process. There is no analysis of whether a crash during the restart sequence (between shutdown of old master and startup of new master) leaves system proxy settings in a broken state that the watchdog would not detect and clean up. The interaction between the new restart logic and existing watchdog cleanup path is not addressed.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-4: CPU during normal browsing does not exceed 5% on average",
+      "detail": "Task 4 addresses CPU optimization via _find_inject_position() and is_target_domain() micro-optimizations. However, the tech-spec Solution section attributes CPU savings primarily to removing ~30 unused addons from the hook chain (mitmproxy calls each addon's hook on every flow event). There is no quantitative analysis or estimate of how much CPU is saved per optimization. For a size L feature, absence of any measurement baseline or expected delta for CPU makes this acceptance criterion unverifiable from the spec alone.",
+      "severity": "minor"
+    }
+  ],
+  "coverage_map": [
+    { "id": "US-1", "text": "Startup RAM ~100-150MB", "status": "covered", "mapped_to": "Solution (attack vector 1: minimize addon chain), Decision 1 (DumpMaster→Master removes View store)" },
+    { "id": "US-2", "text": "RAM stable during active use (15+ tabs, Docs, Meet)", "status": "covered", "mapped_to": "Solution (attack vector 2: flow lifecycle), Task 2 (FlowCleanup), Task 5 (integration test for memory)" },
+    { "id": "US-3", "text": "RAM ≤150MB after 8 hours continuous", "status": "covered", "mapped_to": "Solution (all three vectors together), Acceptance Criteria in tech-spec" },
+    { "id": "US-4", "text": "CPU ≤5% during active browsing", "status": "partial", "mapped_to": "Task 4 (micro-optimizations), Solution (addon chain reduction). No quantitative baseline or delta estimate." },
+    { "id": "US-5", "text": "No CLI/UI changes", "status": "covered", "mapped_to": "Solution: 'All existing functionality preserved unchanged'; no tasks modify CLI or tray" },
+    { "id": "US-6", "text": "Completed flows deleted from proxy memory after processing", "status": "covered", "mapped_to": "Solution (attack vector 2), Decision 2, Task 2 (FlowCleanup.response/error/websocket_end), Unit tests" },
+    { "id": "US-7", "text": "WebSocket message history trimmed to ≤1 message", "status": "covered", "mapped_to": "Solution, Task 2 (FlowCleanup.websocket_message trims to 1), Acceptance Criteria, Unit tests" },
+    { "id": "US-8", "text": "RAM watchdog: restart at 300MB, 10-min cooldown, max 3/hour", "status": "covered", "mapped_to": "Solution (attack vector 3), Decision 3, Decision 4, Task 3, Acceptance Criteria, Unit tests" },
+    { "id": "US-9", "text": "All existing tests pass unchanged", "status": "covered", "mapped_to": "Testing Strategy (existing tests must pass), Task 5, Task 9 (pre-deploy QA), Acceptance Criteria" },
+    { "id": "US-10", "text": "Accept-Language header rewriting on target and non-target domains", "status": "covered", "mapped_to": "GeoFixAddon is unchanged; header rewriting logic not modified; covered by existing tests per Testing Strategy" },
+    { "id": "US-11", "text": "JS injection on target domains", "status": "covered", "mapped_to": "Integration test: 'send request to target domain, verify JS injection works'; Acceptance Criteria (FlowCleanup fires after GeoFixAddon)" },
+    { "id": "US-12", "text": "CSP nonce for injected script", "status": "covered", "mapped_to": "Security Audit (Task 7): 'CSP nonce injection with minimal Master'; existing E2E tests cover this" },
+    { "id": "US-13", "text": "Watchdog cleanup within 10s of crash", "status": "partial", "mapped_to": "Decision 5 confirms watchdog unchanged. Interaction with new restart sequence not analyzed." },
+    { "id": "US-14", "text": "Country switching via tray without proxy restart", "status": "covered", "mapped_to": "GeoFixAddon state preserved across restarts (Acceptance Criteria); switching logic not modified" },
+    { "id": "US-15", "text": "All current functions preserved: spoofing, tray, watchdog, country switching, setup wizard, cleanup", "status": "covered", "mapped_to": "Solution: 'All existing functionality preserved'; scope is additive/replacement only" },
+    { "id": "US-16", "text": "Security level must not decrease", "status": "covered", "mapped_to": "Task 7 (Security Audit): CA key lifecycle, DPAPI, CSP nonce, no new attack surface from restart; Decision 6 (no new deps)" },
+    { "id": "US-17", "text": "Watchdog reliability not sacrificed for RAM savings", "status": "covered", "mapped_to": "Decision 5 (explicit: reject thread/batch alternatives for reliability)" },
+    { "id": "US-18", "text": "Works on Windows 10/11, Python 3.12+", "status": "partial", "mapped_to": "Decision 6 mentions Windows ctypes stability. No explicit Python 3.12 compatibility validation for mitmproxy.master.Master direct instantiation." },
+    { "id": "US-19", "text": "PyInstaller build continues to work", "status": "partial", "mapped_to": "Not mentioned in tech-spec. New explicit addon imports may require PyInstaller hidden-imports update. No task owns this." },
+    { "id": "US-20", "text": "Compatibility with desktop shortcuts and install.bat", "status": "covered", "mapped_to": "No changes to entry points or installation artifacts; covered by US-5 / no CLI changes" }
+  ],
+  "summary": "18/20 requirements covered (2 partial, 0 missing). No critical findings. 1 major finding: PyInstaller/install compatibility not addressed despite new mitmproxy addon import paths. 1 major finding: GeoFixAddon state preservation across RAM-triggered restart is specified as an acceptance criterion but no task owns the mechanism. 3 minor findings: CPU quantification gap, Python 3.12 validation gap, restart-crash interaction with watchdog cleanup not analyzed. Solution depth is adequate for size L — three concrete attack vectors with specific component decisions, alternatives with rationale, and a detailed Architecture section. No scope creep detected. No overengineering detected — all components map directly to requirements."
+}

@@ -1,0 +1,71 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 6,
+    "critical": 0,
+    "major": 3,
+    "minor": 3
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "A02: Cryptographic Failures",
+      "title": "CA key lifecycle gap on proxy restart: key reloaded from disk",
+      "description": "The current `_start_mitmproxy()` function passes `confdir=session_tmpdir` so mitmproxy regenerates or reloads the CA key from the session tmpdir on each call. After the initial startup, `delete_ca_key_files()` erases the private key PEM from disk. If the RAM watchdog triggers a proxy restart (Task 3), the new Master instance will call mitmproxy's TlsConfig addon which looks for the CA key in confdir at startup. Because the key files have already been deleted, mitmproxy will regenerate a brand-new ephemeral CA, install it as a different certificate, but the previously-installed CA thumbprint stored in the state file will be stale. The browser will trust the old CA cert, not the new one, causing TLS interception to fail silently — or, in a pathological implementation, the confdir could be re-populated with a different key before deletion. The tech-spec's acceptance criteria states 'Proxy restart preserves GeoFixAddon state (current preset, JS payload cache)' but does not address the CA key lifecycle across restarts.",
+      "location": "Section: Decision 4 — Proxy thread restart; src/main.py:_start_mitmproxy():242-273",
+      "impact": "On proxy restart triggered by the RAM watchdog, mitmproxy generates a new CA keypair. The old CA cert remains installed in the Windows trust store (with the old thumbprint). The new CA is not installed, so HTTPS interception will fail with certificate errors in the browser until the user manually intervenes or the session ends. Additionally the old CA cert persists in the Windows store beyond its intended lifetime, widening the trust window unnecessarily.",
+      "recommendation": "Before restarting the mitmproxy thread, the implementation must: (1) call `uninstall_ca_cert(state.ca_thumbprint)` to remove the old CA from the trust store, (2) re-run `install_ca_cert(session_tmpdir)` after the new Master starts and generates a fresh CA, (3) update `state.ca_thumbprint` with the new thumbprint and call `save_state(state)`. Alternatively, configure the restarted Master to use a stable, in-memory CA that is serialized across restarts — but this is architecturally more complex. The simplest safe approach: on RAM restart, do a full CA rotation (uninstall old, start new Master, install new cert, delete new key files, save state). The tech-spec must explicitly document this as a requirement for Task 3.",
+      "cwe": "CWE-321 (Use of Hard-coded Cryptographic Key / improper key lifecycle)"
+    },
+    {
+      "severity": "major",
+      "category": "A01: Broken Access Control",
+      "title": "Proxy restart window: system proxy points to a non-listening port for ~5 seconds",
+      "description": "During the ~5-second proxy restart window (old master shut down, new master starting), the system-wide WinINET proxy setting still points to `127.0.0.1:PORT`. Any browser request during this window will fail to connect to the proxy and, depending on browser and application settings, may bypass the proxy entirely and go direct. This is particularly relevant for traffic that should be intercepted for geo-signal injection. The tech-spec acknowledges a '~5 sec interruption' but does not specify whether the proxy-bypass risk is acceptable from a security standpoint.",
+      "location": "Section: Decision 4 — Proxy thread restart; Section: Architecture — RAM monitoring",
+      "impact": "During the restart window, browser requests bypass the proxy. For the geo-spoofing use case this means: (1) real Accept-Language headers leak to Google servers, (2) real geolocation data may be returned to the browser's geolocation API (no JS injection), and (3) in worst case, the real IP/location is briefly disclosed to target servers if VPN is not in use. The user spec explicitly requires 'Уровень безопасности не должен снижаться' (security level must not decrease).",
+      "recommendation": "Document this gap explicitly in the user-facing restart behavior. Consider: (1) pausing the WinINET proxy briefly to force browser connection failure (better than transparent bypass), (2) setting `ProxyOverride` or disabling the proxy before restart and re-enabling only after the new master is confirmed listening — this is safe because the browser will queue requests, not bypass. This is a design decision that must be made consciously and recorded in tech-spec Decision 4.",
+      "cwe": "CWE-693 (Protection Mechanism Failure)"
+    },
+    {
+      "severity": "major",
+      "category": "A05: Security Misconfiguration",
+      "title": "FlowCleanup addon ordering is fragile and not enforced by tests",
+      "description": "The tech-spec specifies FlowCleanup must be added LAST in the addon chain so GeoFixAddon processes flows first. The spec notes this as an acceptance criterion: 'FlowCleanup.response() fires after GeoFixAddon.response() in addon chain.' However, with base Master (not DumpMaster), the addon hook dispatch order is strictly the order of `master.addons.add()` calls. If a future change or restart reorders addon registration, FlowCleanup could remove the flow before GeoFixAddon's `response()` hook runs, resulting in silently dropped JS injections. The unit tests specified in the tech-spec ('Minimal Master setup: verify required addons are loaded') do not include a test that verifies the dispatch order of response hooks.",
+      "location": "Section: Decision 2 — FlowCleanup as separate addon; Section: Testing Strategy — Unit tests",
+      "impact": "If FlowCleanup runs before GeoFixAddon on a response event, it may remove or dereference the flow object before GeoFixAddon can read `flow.response` and inject JS. The failure mode is silent: JS injection stops working without error logs. This is a correctness issue with security implications because the geo-spoofing protection silently degrades.",
+      "recommendation": "Add an explicit unit test that instantiates a minimal Master, adds addons in the documented order, fires a synthetic response event, and asserts that GeoFixAddon's injection ran before FlowCleanup removed the flow. The test should fail if the order is reversed. Additionally, add a runtime assertion in `_start_mitmproxy()` that verifies addon registration order.",
+      "cwe": "CWE-696 (Incorrect Behavior Order)"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "Proxy restart events have no security audit trail",
+      "description": "The RAM watchdog restart mechanism (Task 3) will silently restart the proxy thread when memory exceeds 300MB. The tech-spec specifies the restart is logged ('log-only' after 3 restarts/hour) but does not require logging of the security-relevant events: CA cert uninstall/reinstall, the proxy downtime window duration, and whether any requests bypassed the proxy during restart. Without this audit trail, a user cannot determine whether geo-signal spoofing was active continuously or had gaps.",
+      "location": "Section: Architecture — RAM monitoring; Task 3: Add RAM monitoring with proxy auto-restart",
+      "impact": "Users cannot audit proxy restart events or confirm security continuity. If the proxy restarted during a sensitive browsing session, there is no record of the gap. The RAM monitor exceeding 3 restarts/hour (log-only mode) also means the proxy may operate in a degraded state (post-300MB) without user notification beyond log entries.",
+      "recommendation": "Log all proxy restarts at WARNING level with: timestamp, RAM reading that triggered restart, duration of downtime window, new CA thumbprint after restart. Consider showing a brief system tray notification for each restart so the user is aware of the security gap. After 3 restarts/hour, emit a tray notification rather than silently continuing.",
+      "cwe": "CWE-778 (Insufficient Logging)"
+    },
+    {
+      "severity": "minor",
+      "category": "A04: Insecure Design",
+      "title": "WebSocket message trimming could suppress security-relevant injection errors",
+      "description": "FlowCleanup trims WebSocket message history to 1 message per connection after each `websocket_message` event. mitmproxy's internal error handling for WebSocket flows sometimes stores error metadata in the flow's message history. By aggressively trimming to 1 message, error context that could help diagnose injection failures or WebSocket interception issues is silently discarded. The tech-spec justification focuses on Google Docs / Meet RAM growth, but does not address flows where the message contains error context.",
+      "location": "Section: Architecture — WebSocket lifecycle; Task 2: Add FlowCleanup addon",
+      "impact": "Minor: suppresses diagnostic information. Not exploitable by an external attacker, but reduces operator ability to detect anomalies in WebSocket traffic.",
+      "recommendation": "Retain error messages in the history even during trimming (check `message.injected` or message type before trimming). Alternatively, keep the last 2 messages (last normal + potential error) instead of 1. Log a warning if a trimmed message was an error-type message.",
+      "cwe": "CWE-390 (Detection of Error Condition Without Action)"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "DPAPI state file passthrough on non-Windows silently stores plaintext",
+      "description": "The existing `_dpapi_encrypt()` / `_dpapi_decrypt()` functions emit a WARNING log and return plaintext on non-Windows platforms. The tech-spec's RAM monitoring feature will call `save_state()` on every proxy restart cycle (to update CA thumbprint and state). On non-Windows test environments (Linux/macOS used in CI), state files including CA thumbprint, Firefox backup paths, and proxy port are stored unencrypted. This is an existing issue but it will be exercised more frequently after Task 3 adds restart-triggered state updates.",
+      "location": "src/system_config.py:_dpapi_encrypt():92-120",
+      "impact": "On non-Windows environments: state file is stored in plaintext. On Windows (the only production platform): no impact since DPAPI is used. Risk is limited to developer machines and CI environments, but could expose CA thumbprints and profile paths in CI logs if state file is accidentally emitted.",
+      "recommendation": "Add a note in the Task 3 implementation that new `save_state()` calls after proxy restart must not be called in a way that leaks the plaintext state to stdout/logs. Ensure CI test fixtures that call `save_state()` use a mock that does not write to disk, or clean up state files after tests.",
+      "cwe": "CWE-312 (Cleartext Storage of Sensitive Information)"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "status": "changes_required",
+  "summary": "Checked 24 claims, found 5 mirages (3 critical, 2 minor)",
+  "findings": [
+    {
+      "severity": "critical",
+      "type": "missing_function",
+      "claim": "tech-spec says: import Proxyserver from mitmproxy.proxy.server — 'mitmproxy.proxy.server.Proxyserver'",
+      "reality": "mitmproxy.proxy.server exists but has no Proxyserver class. Proxyserver lives at mitmproxy.addons.proxyserver.Proxyserver. Verified: `from mitmproxy.proxy.server import Proxyserver` raises ImportError on mitmproxy 12.2.1.",
+      "source": "tech-spec.md, section Dependencies, 'Using existing (from project)'; also Architecture section 'master.addons.add(Core, Proxyserver, NextLayer, TlsConfig)'",
+      "fix": "Replace `mitmproxy.proxy.server.Proxyserver` with `mitmproxy.addons.proxyserver.Proxyserver` everywhere in the spec and implementation tasks."
+    },
+    {
+      "severity": "critical",
+      "type": "missing_function",
+      "claim": "tech-spec says: set `flow_detail=0` in mitmproxy Options to suppress stdout logging (Acceptance Criteria item; Architecture section)",
+      "reality": "mitmproxy.options.Options has no `flow_detail` attribute in mitmproxy 12.2.1. Verified: `hasattr(Options(), 'flow_detail')` returns False, and searching all option names finds no match. This option does not exist in the installed version.",
+      "source": "tech-spec.md, section Architecture 'Add flow_detail=0 to suppress stdout logging'; Acceptance Criteria '[ ] flow_detail=0 set in mitmproxy Options'",
+      "fix": "Remove `flow_detail=0` from Options call. To suppress stdout logging from DumpMaster, use `with_termlog=False` and `with_dumper=False` parameters on DumpMaster, or pass `with_termlog=False` to the base Master constructor. Update Acceptance Criteria accordingly."
+    },
+    {
+      "severity": "critical",
+      "type": "missing_pattern",
+      "claim": "tech-spec says: DumpMaster loads `View` store that retains all flows indefinitely — primary cause of memory growth. Decision 1: 'The View addon stores all flows indefinitely — the primary cause of memory growth.'",
+      "reality": "In mitmproxy 12.2.1, View is NOT in default_addons() — verified by instantiating all 31 default addons and checking type names. View is a standalone addon available in mitmproxy.addons.view but not loaded by DumpMaster by default. The actual memory retention mechanism in DumpMaster is the EventStore (log entries, capped at 10000) and the Dumper output addon, not a View store.",
+      "source": "tech-spec.md, Decision 1 rationale; Solution section item 1; Architecture section",
+      "fix": "Remove or correct the View store claim. DumpMaster does not load View in mitmproxy 12.x. The actual memory growth source needs to be re-identified — likely the mitmproxy flow object references held in the addons chain or ReadFileStdin. Update Decision 1 rationale to reflect reality."
+    },
+    {
+      "severity": "minor",
+      "type": "missing_pattern",
+      "claim": "tech-spec says: DumpMaster loads '~35 default addons' and '~30 unused addons'",
+      "reality": "default_addons() returns exactly 31 addons. DumpMaster adds Dumper + KeepServing + ReadFileStdin + ErrorCheck = 35 total with dumper, 34 without. The '~35' claim is correct with dumper. The '~30 unused' claim is approximately correct (31 - 4 essential = 27 unused from default_addons). Minor numeric discrepancy only.",
+      "source": "tech-spec.md, Solution section item 1; Decision 1",
+      "fix": "Optionally update to exact numbers: 31 default addons + 4 extras = 35 total. 27 unused from default_addons. This is cosmetic — the substance is correct."
+    },
+    {
+      "severity": "minor",
+      "type": "missing_pattern",
+      "claim": "tech-spec says: optimize is_target_domain() to use 'tuple-based endswith() for O(1) suffix matching instead of linear list scan' (Task 4)",
+      "reality": "Python's str.endswith(tuple) iterates through the tuple in C — it is O(len(tuple)) not O(1). The current list-loop is also O(len(TARGET_DOMAINS)). The asymptotic complexity is identical; the tuple form is faster in practice only due to the C implementation loop vs Python loop. Describing this as O(1) vs linear scan is technically incorrect.",
+      "source": "tech-spec.md, Task 4 description",
+      "fix": "Correct description to: 'use tuple-based endswith() for faster suffix matching — eliminates Python-level loop overhead, replacing it with C-level iteration'. Remove the O(1) claim."
+    }
+  ],
+  "stats": {
+    "total_claims_checked": 24,
+    "confirmed": 19,
+    "mirages_found": 5,
+    "verified_claims": [
+      "src/main.py exists",
+      "src/proxy_addon.py exists",
+      "src/presets.py exists",
+      "src/system_config.py exists",
+      "test/test_proxy_addon.py exists",
+      "test/test_presets.py exists",
+      "test/test_integration_windows.py exists",
+      "test/test_integration_proxy.py — correctly noted as new file to create",
+      "from mitmproxy.master import Master — OK",
+      "from mitmproxy.tools.dump import DumpMaster — OK",
+      "from mitmproxy.options import Options — OK",
+      "from mitmproxy.addons.core import Core — OK",
+      "from mitmproxy.addons.next_layer import NextLayer — OK",
+      "from mitmproxy.addons.tlsconfig import TlsConfig — OK",
+      "from mitmproxy.addons.errorcheck import ErrorCheck — OK",
+      "from mitmproxy.addons.keepserving import KeepServing — OK",
+      "_start_mitmproxy() function exists in src/main.py — OK (uses DumpMaster currently)",
+      "_find_inject_position() exists in src/proxy_addon.py — OK (uses full .lower() copy)",
+      "is_target_domain() exists in src/presets.py — OK (uses list loop)",
+      "ProxyState dataclass exists in src/system_config.py — OK",
+      "GeoFixAddon class exists in src/proxy_addon.py — OK",
+      "monitor thread (_monitor_loop) exists in src/main.py with 60-second interval — OK",
+      "master.addons.add() method exists in mitmproxy AddonManager — OK",
+      "FlowCleanup is a new class — correctly identified as not yet existing"
+    ]
+  }
+}
