@@ -309,6 +309,37 @@ def _get_process_memory_mb() -> float:
     return _get_memory_mb_linux()  # already MB
 
 
+def _should_restart(
+    mem_mb: float,
+    last_flow_time: float,
+    last_restart_time: float,
+    restart_timestamps: list[float],
+    now: float,
+) -> tuple[bool, str]:
+    """Check all RAM restart guards. Returns (should_restart, reason).
+
+    Reason is empty string if should restart, otherwise describes why blocked.
+    """
+    if mem_mb < _RAM_THRESHOLD_MB:
+        return False, "below_threshold"
+
+    # Idle guard
+    idle_seconds = now - last_flow_time
+    if idle_seconds < _IDLE_GUARD_SECONDS:
+        return False, f"traffic_active ({idle_seconds:.1f}s ago)"
+
+    # Cooldown
+    if now - last_restart_time < _COOLDOWN_SECONDS:
+        return False, f"cooldown ({now - last_restart_time:.0f}s / {_COOLDOWN_SECONDS}s)"
+
+    # Rate limit
+    recent = [t for t in restart_timestamps if now - t < _RATE_LIMIT_WINDOW]
+    if len(recent) >= _RATE_LIMIT_MAX:
+        return False, f"rate_limit ({len(recent)} restarts in last hour)"
+
+    return True, ""
+
+
 def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None, port: int = PROXY_PORT) -> tuple[threading.Thread, "Master"]:
     """Start mitmproxy in a background thread.
 
@@ -592,33 +623,20 @@ def main():
             # RAM check
             try:
                 mem_mb = _get_process_memory_mb()
-                if mem_mb < _RAM_THRESHOLD_MB:
-                    continue
-
-                logger.info("RAM usage: %.1f MB (threshold: %.1f MB)", mem_mb, _RAM_THRESHOLD_MB)
-
-                # Idle guard: skip if flow processed within last 10 seconds
                 now = time.monotonic()
-                idle_seconds = now - addon._last_flow_time
-                if idle_seconds < _IDLE_GUARD_SECONDS:
-                    logger.info("RAM restart deferred: traffic active (%.1f sec ago)", idle_seconds)
-                    continue
-
-                # Cooldown: skip if restarted within last 10 minutes
-                if now - _last_restart_time < _COOLDOWN_SECONDS:
-                    logger.info("RAM restart skipped: cooldown active (%.0f sec remaining)",
-                                _COOLDOWN_SECONDS - (now - _last_restart_time))
-                    continue
-
-                # Rate limit: max 3 restarts per hour
-                _restart_timestamps[:] = [t for t in _restart_timestamps if now - t < _RATE_LIMIT_WINDOW]
-                if len(_restart_timestamps) >= _RATE_LIMIT_MAX:
-                    logger.warning("RAM restart suppressed: rate limit reached (%d restarts in last hour)",
-                                   len(_restart_timestamps))
+                should, reason = _should_restart(
+                    mem_mb, addon._last_flow_time,
+                    _last_restart_time, _restart_timestamps, now
+                )
+                if not should:
+                    if mem_mb >= _RAM_THRESHOLD_MB:
+                        logger.info("RAM restart blocked: %s (%.1f MB)", reason, mem_mb)
                     continue
 
                 # All guards passed — restart
                 logger.info("Initiating mitmproxy restart (RAM: %.1f MB)", mem_mb)
+                # Prune old timestamps
+                _restart_timestamps[:] = [t for t in _restart_timestamps if now - t < _RATE_LIMIT_WINDOW]
                 new_thread, new_master = _restart_mitmproxy(
                     proxy_ref["master"], addon, session_tmpdir, port, state
                 )
