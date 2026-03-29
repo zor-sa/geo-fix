@@ -162,10 +162,12 @@ class TestCACertificate:
         if not MITMPROXY_CA_CERT.exists():
             pytest.skip("Could not generate CA cert")
 
-        from src.system_config import install_ca_cert, uninstall_ca_cert
+        from src.system_config import install_ca_cert, uninstall_ca_cert, MITMPROXY_CA_DIR
 
-        assert install_ca_cert(), "CA cert install failed"
-        uninstall_ca_cert()
+        confdir = str(MITMPROXY_CA_DIR)
+        thumbprint = install_ca_cert(confdir)
+        assert thumbprint, "CA cert install failed"
+        uninstall_ca_cert(thumbprint=thumbprint)
 
 
 class TestSingleInstanceGuard:
