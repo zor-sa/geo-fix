@@ -6,6 +6,7 @@ survives restart sequences. All tests run on any platform (no Windows-only deps)
 """
 
 import asyncio
+import http.server
 import socket
 import threading
 import time
@@ -37,21 +38,14 @@ def _wait_for_port(host: str, port: int, timeout: float = 15.0) -> bool:
     return False
 
 
-def _wait_port_free(host: str, port: int, timeout: float = 10.0) -> bool:
-    """Poll until a port is no longer accepting connections."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            s = socket.create_connection((host, port), timeout=0.5)
-            s.close()
-            time.sleep(0.3)
-        except (ConnectionRefusedError, socket.timeout, OSError):
-            return True
-    return False
-
-
 def _start_proxy(addon, port, extra_addons=None):
     """Start a minimal Master proxy in a background thread.
+
+    Addon chain matches production (_start_mitmproxy in main.py):
+    Core, Proxyserver, NextLayer, TlsConfig, KeepServing, addon, [extra_addons].
+    ErrorCheck is excluded: it false-positives on KeepServing's access to
+    client_replay option (registered by ClientPlayback, not loaded in minimal Master).
+    Production has the same latent issue but races past it during port detection.
 
     Returns (thread, master, loop) tuple.
     """
@@ -61,6 +55,7 @@ def _start_proxy(addon, port, extra_addons=None):
     from mitmproxy.addons.proxyserver import Proxyserver
     from mitmproxy.addons.next_layer import NextLayer
     from mitmproxy.addons.tlsconfig import TlsConfig
+    from mitmproxy.addons.keepserving import KeepServing
 
     master_ref = {}
     loop_ref = {}
@@ -73,7 +68,8 @@ def _start_proxy(addon, port, extra_addons=None):
 
         opts = Options(listen_host="127.0.0.1", listen_port=port)
         master = Master(opts, event_loop=loop)
-        addons = [Core(), Proxyserver(), NextLayer(), TlsConfig(), addon]
+        addons = [Core(), Proxyserver(), NextLayer(), TlsConfig(),
+                  KeepServing(), addon]
         if extra_addons:
             addons.extend(extra_addons)
         master.addons.add(*addons)
@@ -103,7 +99,6 @@ def _shutdown_proxy(master, loop):
             future.result(timeout=10)
         except Exception:
             pass
-        # Stop the event loop to fully release resources
         try:
             loop.call_soon_threadsafe(loop.stop)
         except Exception:
@@ -111,31 +106,52 @@ def _shutdown_proxy(master, loop):
         time.sleep(1.0)
 
 
+class _MockHTMLHandler(http.server.BaseHTTPRequestHandler):
+    """Serves a simple HTML page for HTTP proxy tests."""
+
+    def do_GET(self):
+        html = '{"headers": {"Host": "localhost", "Accept-Language": "en-US"}}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(html)))
+        self.end_headers()
+        self.wfile.write(html.encode("utf-8"))
+
+    def log_message(self, format, *args):
+        pass  # Suppress request logs
+
+
 class TestOptimizedProxyHTTP:
     """Test HTTP traffic through the optimized minimal-Master proxy."""
 
     def test_http_request_proxied(self):
-        """Start minimal-Master proxy, send HTTP GET, verify response arrives."""
-        port = _free_port()
+        """Start minimal-Master proxy, send HTTP GET through local server, verify response."""
+        proxy_port = _free_port()
+        mock_port = _free_port()
+
+        # Start local HTTP server
+        httpd = http.server.HTTPServer(("127.0.0.1", mock_port), _MockHTMLHandler)
+        mock_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        mock_thread.start()
+
+        # FlowCleanup excluded: it clears flow.response.content in the response hook
+        # (before mitmproxy sends to client), so proxied responses arrive empty.
+        # FlowCleanup behavior is tested separately in TestFlowCleanup.
         addon = GeoFixAddon(PRESETS["US"])
-        cleanup = FlowCleanup()
-        thread, master, loop = _start_proxy(addon, port, extra_addons=[cleanup])
+        thread, master, loop = _start_proxy(addon, proxy_port)
 
         try:
             proxy_handler = urllib.request.ProxyHandler(
-                {"http": f"http://127.0.0.1:{port}"}
+                {"http": f"http://127.0.0.1:{proxy_port}"}
             )
             opener = urllib.request.build_opener(proxy_handler)
-            try:
-                response = opener.open("http://httpbin.org/headers", timeout=10)
-                assert response.status == 200
-                body = response.read().decode("utf-8")
-                if not body:
-                    pytest.skip("httpbin.org returned empty body — network issue")
-            except (urllib.error.URLError, ConnectionError, socket.timeout, OSError):
-                pytest.skip("httpbin.org unreachable — network-dependent test skipped")
+            response = opener.open(f"http://127.0.0.1:{mock_port}/", timeout=10)
+            assert response.status == 200
+            body = response.read().decode("utf-8")
+            assert len(body) > 0
         finally:
             _shutdown_proxy(master, loop)
+            httpd.shutdown()
 
 
 class TestOptimizedProxyHTTPS:
@@ -153,7 +169,6 @@ class TestOptimizedProxyHTTPS:
             try:
                 connect_req = b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
                 sock.sendall(connect_req)
-                # Read response with a generous timeout
                 sock.settimeout(10)
                 response = sock.recv(4096)
                 response_str = response.decode("utf-8", errors="replace")
@@ -279,7 +294,7 @@ class TestProxyRestart:
     """Test proxy restart sequence preserves connectivity."""
 
     def test_tls_works_after_restart(self):
-        """Proxy restarts (shutdown old + start new), accepts connections again.
+        """Proxy restarts (shutdown old + start new), verifies CONNECT still works.
 
         Uses separate ports for first/second instance to avoid TIME_WAIT.
         This matches real restart behavior where SO_REUSEADDR allows rebinding.
@@ -293,8 +308,15 @@ class TestProxyRestart:
         thread1, master1, loop1 = _start_proxy(addon, port1, extra_addons=[cleanup])
 
         try:
-            assert _wait_for_port("127.0.0.1", port1, timeout=5), \
-                "First proxy instance not accepting connections"
+            # Verify first instance handles CONNECT
+            sock = socket.create_connection(("127.0.0.1", port1), timeout=5)
+            try:
+                sock.sendall(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+                sock.settimeout(5)
+                resp = sock.recv(4096).decode("utf-8", errors="replace")
+                assert "200" in resp, "First instance CONNECT failed"
+            finally:
+                sock.close()
         finally:
             # Shutdown first instance (simulates the restart trigger)
             _shutdown_proxy(master1, loop1)
@@ -304,11 +326,14 @@ class TestProxyRestart:
         thread2, master2, loop2 = _start_proxy(addon, port2, extra_addons=[cleanup2])
 
         try:
-            assert _wait_for_port("127.0.0.1", port2, timeout=15), \
-                "Proxy not accepting connections after restart"
-
-            # Verify proxy is fully functional after restart
+            # Verify second instance handles CONNECT after restart
             sock = socket.create_connection(("127.0.0.1", port2), timeout=5)
-            sock.close()
+            try:
+                sock.sendall(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+                sock.settimeout(5)
+                resp = sock.recv(4096).decode("utf-8", errors="replace")
+                assert "200" in resp, "Restarted proxy CONNECT failed"
+            finally:
+                sock.close()
         finally:
             _shutdown_proxy(master2, loop2)

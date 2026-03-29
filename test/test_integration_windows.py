@@ -25,12 +25,21 @@ import pytest
 WIN_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
 
 
+def _free_port():
+    """Get a free port from the OS."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 class TestProxyStartsAndInjects:
     """Test that mitmproxy starts and rewrites Accept-Language."""
 
     def test_proxy_starts_and_rewrites_header(self):
         from src.proxy_addon import GeoFixAddon
         from src.presets import PRESETS
+
+        port = _free_port()
 
         # Start proxy in background thread
         proxy_ready = threading.Event()
@@ -47,16 +56,17 @@ class TestProxyStartsAndInjects:
                 from mitmproxy.addons.proxyserver import Proxyserver
                 from mitmproxy.addons.next_layer import NextLayer
                 from mitmproxy.addons.tlsconfig import TlsConfig
+                from mitmproxy.addons.keepserving import KeepServing
 
-                opts = Options(listen_host="127.0.0.1", listen_port=18090)
+                opts = Options(listen_host="127.0.0.1", listen_port=port)
                 master = Master(opts, event_loop=loop)
                 master.addons.add(
                     Core(), Proxyserver(), NextLayer(), TlsConfig(),
-                    GeoFixAddon(PRESETS["US"])
+                    KeepServing(), GeoFixAddon(PRESETS["US"])
                 )
                 proxy_ready.set()
                 loop.run_until_complete(master.run())
-            except Exception as e:
+            except (Exception, SystemExit) as e:
                 proxy_error.append(str(e))
                 proxy_ready.set()
 
@@ -70,18 +80,18 @@ class TestProxyStartsAndInjects:
         # Wait for port to be open
         for _ in range(20):
             try:
-                s = socket.create_connection(("127.0.0.1", 18090), timeout=1)
+                s = socket.create_connection(("127.0.0.1", port), timeout=1)
                 s.close()
                 break
             except (ConnectionRefusedError, socket.timeout):
                 time.sleep(0.5)
         else:
-            pytest.fail("Proxy port 18090 never opened")
+            pytest.fail(f"Proxy port {port} never opened")
 
         # Test via subprocess curl (HTTP, no cert needed)
         try:
             result = subprocess.run(
-                ["curl", "-s", "-x", "http://127.0.0.1:18090",
+                ["curl", "-s", "-x", f"http://127.0.0.1:{port}",
                  "-H", "Accept-Language: ru-RU",
                  "http://httpbin.org/headers"],
                 capture_output=True, text=True, timeout=15
@@ -129,13 +139,19 @@ class TestCACertificate:
         from src.system_config import MITMPROXY_CA_CERT
 
         if not MITMPROXY_CA_CERT.exists():
-            # Generate cert by briefly starting mitmproxy
+            # Generate cert by briefly starting mitmproxy with TlsConfig
             try:
                 loop = asyncio.new_event_loop()
                 from mitmproxy.options import Options
                 from mitmproxy.master import Master
-                opts = Options(listen_host="127.0.0.1", listen_port=18091)
+                from mitmproxy.addons.core import Core
+                from mitmproxy.addons.proxyserver import Proxyserver
+                from mitmproxy.addons.tlsconfig import TlsConfig
+
+                port = _free_port()
+                opts = Options(listen_host="127.0.0.1", listen_port=port)
                 master = Master(opts, event_loop=loop)
+                master.addons.add(Core(), Proxyserver(), TlsConfig())
                 time.sleep(1)
                 master.shutdown()
             except Exception:
