@@ -53,7 +53,7 @@ from src.system_config import (
     unset_wininet_proxy,
 )
 from src.setup_wizard import is_setup_complete, run_setup_wizard
-from src.proxy_addon import GeoFixAddon
+from src.proxy_addon import FlowCleanup, GeoFixAddon
 from src.tray import GeoFixTray
 
 from src.watchdog import STOP_FLAG_NAME
@@ -66,6 +66,17 @@ _cleanup_lock = threading.Lock()
 _watchdog_proc = None
 _stop_token = None
 _session_tmpdir = None
+
+# RAM monitor state
+_last_restart_time: float = 0.0
+_restart_timestamps: list[float] = []
+
+# RAM monitor constants
+_RAM_THRESHOLD_MB = 300.0
+_COOLDOWN_SECONDS = 600  # 10 minutes
+_RATE_LIMIT_MAX = 3
+_RATE_LIMIT_WINDOW = 3600  # 1 hour
+_IDLE_GUARD_SECONDS = 10
 
 
 def _setup_logging():
@@ -239,6 +250,65 @@ def _do_cleanup():
             logger.error("Cleanup error: %s", e)
 
 
+def _get_private_bytes_windows() -> float:
+    """Read Private Working Set via Windows GetProcessMemoryInfo. Returns bytes."""
+    import ctypes
+    import ctypes.wintypes
+
+    class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
+        _fields_ = [
+            ("cb", ctypes.wintypes.DWORD),
+            ("PageFaultCount", ctypes.wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+            ("PrivateUsage", ctypes.c_size_t),
+        ]
+
+    try:
+        kernel32 = ctypes.windll.kernel32
+        psapi = ctypes.windll.psapi
+        handle = kernel32.GetCurrentProcess()
+        counters = PROCESS_MEMORY_COUNTERS_EX()
+        counters.cb = ctypes.sizeof(counters)
+        if psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            return float(counters.PrivateUsage)
+        return 0.0
+    except OSError as e:
+        logger.warning("GetProcessMemoryInfo failed: %s", e)
+        return 0.0
+
+
+def _get_private_bytes_linux() -> float:
+    """Read VmRSS from /proc/self/status. Returns MB."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    # Format: "VmRSS:   153600 kB"
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return float(parts[1]) / 1024.0  # kB to MB
+        return 0.0
+    except FileNotFoundError:
+        return 0.0
+    except (ValueError, OSError) as e:
+        logger.warning("Failed to read /proc/self/status: %s", e)
+        return 0.0
+
+
+def _get_process_memory_mb() -> float:
+    """Get process memory usage in MB. Windows: PrivateUsage, Linux: VmRSS."""
+    if sys.platform == "win32":
+        return _get_private_bytes_windows() / (1024 * 1024)  # bytes to MB
+    return _get_private_bytes_linux()  # already MB
+
+
 def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None, port: int = PROXY_PORT) -> tuple[threading.Thread, "Master"]:
     """Start mitmproxy in a background thread.
 
@@ -263,7 +333,7 @@ def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None, port: int = PROXY_
         master = Master(opts)
         master.addons.add(
             Core(), Proxyserver(), NextLayer(), TlsConfig(),
-            KeepServing(), ErrorCheck(), addon
+            KeepServing(), ErrorCheck(), addon, FlowCleanup()
         )
         master_ref["master"] = master
 
@@ -286,6 +356,61 @@ def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None, port: int = PROXY_
 
     logger.error("mitmproxy failed to start within 15 seconds")
     sys.exit(1)
+
+
+def _restart_mitmproxy(
+    old_master,
+    addon: GeoFixAddon,
+    confdir: str,
+    port: int,
+    state: "ProxyState",
+) -> tuple[threading.Thread, "Master"]:
+    """Restart mitmproxy thread: shutdown old master, regenerate CA, start new master.
+
+    Returns (new_thread, new_master) or (None, None) on failure.
+    """
+    # 1. Shutdown old master
+    try:
+        old_master.shutdown()
+    except Exception as e:
+        logger.error("Failed to shutdown old master: %s", e)
+        return None, None
+
+    # 2. Uninstall old CA cert
+    try:
+        from src.system_config import uninstall_ca_cert as _uninstall
+        _uninstall(thumbprint=state.ca_thumbprint)
+    except Exception as e:
+        logger.warning("Failed to uninstall old CA: %s", e)
+
+    # 3. Start new master (generates new CA in confdir)
+    try:
+        new_thread, new_master = _start_mitmproxy(addon, confdir=confdir, port=port)
+    except Exception as e:
+        logger.error("Failed to start new mitmproxy: %s", e)
+        return None, None
+
+    # 4. Install new CA cert
+    new_thumbprint = install_ca_cert(confdir)
+    if new_thumbprint is None:
+        logger.error("CA cert install failed after restart — proxy running without trusted CA")
+        # Proxy is running but CA not installed — abort restart
+        try:
+            new_master.shutdown()
+        except Exception:
+            pass
+        return None, None
+
+    # 5. Delete CA key files from disk (preserve security hardening)
+    delete_ca_key_files(confdir)
+    delete_ca_public_cert(confdir)
+
+    # 6. Update state
+    state.ca_thumbprint = new_thumbprint
+    save_state(state)
+
+    logger.info("mitmproxy restarted successfully (new CA thumbprint: %s)", new_thumbprint[:12])
+    return new_thread, new_master
 
 
 def main():
@@ -421,8 +546,12 @@ def main():
     tray = GeoFixTray(preset, on_switch_country, on_stop)
     tray_thread = tray.start_threaded()
 
-    # Start monitoring loop (VPN status + watchdog health)
+    # Mutable reference for proxy master (updated on restart)
+    proxy_ref = {"master": proxy_master, "thread": proxy_thread}
+
+    # Start monitoring loop (VPN status + watchdog health + RAM)
     def _monitor_loop():
+        global _last_restart_time, _restart_timestamps
         last_vpn = None
         while not stop_event.is_set():
             stop_event.wait(timeout=60)
@@ -450,6 +579,50 @@ def main():
                     )
                 except Exception as e:
                     logger.error("Failed to respawn watchdog: %s", e)
+
+            # RAM check
+            try:
+                mem_mb = _get_process_memory_mb()
+                if mem_mb < _RAM_THRESHOLD_MB:
+                    continue
+
+                logger.info("RAM usage: %.1f MB (threshold: %.1f MB)", mem_mb, _RAM_THRESHOLD_MB)
+
+                # Idle guard: skip if flow processed within last 10 seconds
+                now = time.monotonic()
+                idle_seconds = now - addon._last_flow_time
+                if idle_seconds < _IDLE_GUARD_SECONDS:
+                    logger.info("RAM restart deferred: traffic active (%.1f sec ago)", idle_seconds)
+                    continue
+
+                # Cooldown: skip if restarted within last 10 minutes
+                if now - _last_restart_time < _COOLDOWN_SECONDS:
+                    logger.info("RAM restart skipped: cooldown active (%.0f sec remaining)",
+                                _COOLDOWN_SECONDS - (now - _last_restart_time))
+                    continue
+
+                # Rate limit: max 3 restarts per hour
+                _restart_timestamps[:] = [t for t in _restart_timestamps if now - t < _RATE_LIMIT_WINDOW]
+                if len(_restart_timestamps) >= _RATE_LIMIT_MAX:
+                    logger.warning("RAM restart suppressed: rate limit reached (%d restarts in last hour)",
+                                   len(_restart_timestamps))
+                    continue
+
+                # All guards passed — restart
+                logger.info("Initiating mitmproxy restart (RAM: %.1f MB)", mem_mb)
+                new_thread, new_master = _restart_mitmproxy(
+                    proxy_ref["master"], addon, session_tmpdir, port, state
+                )
+                if new_thread is not None and new_master is not None:
+                    proxy_ref["master"] = new_master
+                    proxy_ref["thread"] = new_thread
+                    _last_restart_time = time.monotonic()
+                    _restart_timestamps.append(_last_restart_time)
+                    logger.info("mitmproxy restart complete")
+                else:
+                    logger.error("mitmproxy restart failed — will retry next cycle")
+            except Exception as e:
+                logger.error("RAM monitor error: %s", e)
 
     monitor_thread = threading.Thread(target=_monitor_loop, daemon=True, name="monitor")
     monitor_thread.start()

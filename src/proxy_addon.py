@@ -8,6 +8,7 @@ import logging
 import os
 import secrets
 import threading
+import time
 from pathlib import Path
 
 from mitmproxy import http
@@ -128,6 +129,7 @@ class GeoFixAddon:
         self._lock = threading.Lock()
         self._preset = preset
         self._js_payload = _build_js_payload(preset)
+        self._last_flow_time: float = 0.0
 
     @property
     def preset(self) -> CountryPreset:
@@ -145,6 +147,7 @@ class GeoFixAddon:
         """Rewrite Accept-Language header on target domain requests only."""
         if not is_target_domain(flow.request.host):
             return
+        self._last_flow_time = time.monotonic()
         with self._lock:
             accept_lang = self._preset.accept_language
         flow.request.headers["Accept-Language"] = accept_lang

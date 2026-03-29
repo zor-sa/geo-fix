@@ -322,7 +322,6 @@ class TestFlowCleanup:
         assert flow.response.content == b""
         assert flow.websocket.messages == []
 
-    @pytest.mark.xfail(reason="FlowCleanup registration in main.py is Task 3 scope")
     def test_flowcleanup_ordering_after_geofixaddon(self):
         """Verify FlowCleanup is added after GeoFixAddon in the addon chain in main.py."""
         import inspect

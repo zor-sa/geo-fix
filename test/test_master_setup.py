@@ -77,12 +77,14 @@ class TestEssentialAddonsPresent:
 
 
 class TestGeoFixAddonAddedAfterEssentials:
-    """Verify GeoFixAddon is the last addon added."""
+    """Verify GeoFixAddon is added after essentials, FlowCleanup is last."""
 
     @patch("src.main.time.sleep")
     @patch("src.main.check_proxy_running", return_value=True)
-    def test_geofixaddon_added_after_essential_addons(self, mock_check, mock_sleep):
-        """GeoFixAddon instance must be the last addon in the add() call."""
+    def test_geofixaddon_before_flowcleanup(self, mock_check, mock_sleep):
+        """GeoFixAddon must be second-to-last, FlowCleanup must be last."""
+        from src.proxy_addon import FlowCleanup
+
         mock_master_instance = MagicMock()
         mock_master_cls = MagicMock(return_value=mock_master_instance)
         mock_master_instance.run = MagicMock()
@@ -100,9 +102,12 @@ class TestGeoFixAddonAddedAfterEssentials:
         for c in add_calls:
             all_addon_args.extend(c.args)
 
-        # GeoFixAddon should be the last one
-        assert all_addon_args[-1] is addon, \
-            "GeoFixAddon must be the last addon added"
+        # FlowCleanup must be the last addon
+        assert isinstance(all_addon_args[-1], FlowCleanup), \
+            "FlowCleanup must be the last addon added"
+        # GeoFixAddon must be second-to-last
+        assert all_addon_args[-2] is addon, \
+            "GeoFixAddon must be second-to-last (before FlowCleanup)"
 
 
 class TestNoDumperAddon:
