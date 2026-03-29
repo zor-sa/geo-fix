@@ -1,0 +1,51 @@
+{
+  "status": "needs_improvement",
+  "summary": "4 tests added for TDD anchor coverage. Core behavioral tests (addons present, ordering, no Dumper) are structurally sound but suffer from two cross-cutting quality issues: source-text inspection instead of runtime assertion in test 1, and time.sleep not mocked causing all 4 thread-based tests to be artificially slow (~0.5s each). Additionally, the returned master reference is not validated in the tuple test.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "empty_test",
+      "location": "test/test_master_setup.py:10",
+      "issue": "test_master_class_not_dumpmaster reads src/main.py as raw text and asserts string presence ('from mitmproxy.master import Master' in source). This is a static source-text check, not a behavioral assertion. It cannot detect aliased imports (e.g. `import mitmproxy.master as mm; mm.Master(opts)`) and does not verify that Master is actually instantiated at runtime. TDD anchor specifies 'monkeypatch _start_mitmproxy imports; verify Master is used, not DumpMaster' — the monkeypatching approach was not implemented.",
+      "recommendation": "Replace text inspection with runtime verification. Patch `mitmproxy.tools.dump.DumpMaster` and `mitmproxy.master.Master`, call `_start_mitmproxy(...)`, then assert: (a) `mock_dumpmaster_cls.assert_not_called()`, (b) `mock_master_cls.assert_called_once()`. This verifies the actual class used at runtime, not text in a file."
+    },
+    {
+      "severity": "major",
+      "category": "anti_pattern",
+      "location": "test/test_master_setup.py:22,61,91,118",
+      "issue": "All 4 thread-based tests call `_start_mitmproxy(...)` which internally runs `time.sleep(0.5)` in a wait loop before returning. `time.sleep` is not patched, so each test incurs a real 0.5-second wall-clock delay. With 4 tests this adds ~2 seconds of unnecessary wait to the unit test suite. Unit tests must run in milliseconds. Additionally, if `check_proxy_running` were to return False (e.g. in a different environment), the loop runs for 30 × 0.5s = 15 seconds before `sys.exit(1)`.",
+      "recommendation": "Patch `time.sleep` in these tests: add `@patch('src.main.time.sleep')` decorator (or `patch('time.sleep')`). Since `check_proxy_running` is already patched to return True, the sleep serves no purpose in tests. Alternative: extract the inner `run_proxy()` function and test it directly without threading, which is cleaner and avoids all timing concerns."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "test/test_master_setup.py:118",
+      "issue": "test_returns_thread_and_master unpacks `(thread, master)` but only asserts `isinstance(thread, threading.Thread)`. The `master` return value is never validated. Due to the `master_ref` closure pattern in the implementation, `master_ref.get('master')` could theoretically return None if the thread hasn't populated the dict yet. The test would silently pass with `master = None`.",
+      "recommendation": "Add assertion: `assert master is mock_master_instance` to verify the correct master object is returned. This catches the case where `master_ref.get('master')` returns None (race condition) or returns a wrong object."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "test/test_master_setup.py:22",
+      "issue": "test_essential_addons_present verifies addon presence (subset check) but not the declared order. The task spec requires Core, Proxyserver, NextLayer, TlsConfig, KeepServing, ErrorCheck in that specific sequence before GeoFixAddon. The subset check passes even if addons are added in the wrong order.",
+      "recommendation": "Add an order assertion after the subset check: `expected_order = [Core, Proxyserver, NextLayer, TlsConfig, KeepServing, ErrorCheck]; actual_order = [type(a) for a in all_addon_args if type(a) in set(expected_order)]; assert actual_order == expected_order, f'Wrong addon order: {actual_order}'`"
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 5,
+      "passed": 3,
+      "failed": 2,
+      "notes": "test_master_class_not_dumpmaster (text check — fails litmus: doesn't verify runtime instantiation); test_returns_thread_and_master (fails litmus: removing master from return tuple doesn't cause test to fail since master is never asserted). Tests 2-4 pass litmus assuming thread executes within the 0.5s sleep window."
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 5,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy",
+      "notes": "All unit tests — appropriate for this task scope (DI/mock-based testing of addon wiring). No integration tests required for Task 1."
+    }
+  }
+}

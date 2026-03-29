@@ -33,6 +33,29 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 -->
 
+## Task 1: Replace DumpMaster with minimal Master
+
+**Status:** Done
+**Commit:** d1ac6b3
+**Agent:** coder-master
+**Summary:** Replaced `DumpMaster` (35 default addons) with base `mitmproxy.master.Master` plus 6 essential addons (Core, Proxyserver, NextLayer, TlsConfig, KeepServing, ErrorCheck), reducing hook overhead by ~80%. `_start_mitmproxy()` now returns `(thread, master)` tuple for Task 3's controlled restart. No PyInstaller hidden-import issues encountered.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions (4 minor) → [logs/working/task-1/code-reviewer-t1-round1.json]
+- security-auditor: approved (2 minor) → [logs/working/task-1/security-auditor-t1-round1.json]
+- test-reviewer: needs_improvement (2 major, 2 minor) → [logs/working/task-1/test-reviewer-t1-round1.json]
+
+*Round 2 (after fixes):*
+- test-reviewer: passed → [logs/working/task-1/test-reviewer-t1-round2.json]
+
+**Verification:**
+- `pytest test/test_master_setup.py -v` → 5 passed
+- `pytest test/ -x` → 213 passed, 13 skipped
+- Smoke: `python3 -c "from mitmproxy.master import Master; ..."` → OK
+
 ## Task 2: Add FlowCleanup addon
 
 **Status:** Done
