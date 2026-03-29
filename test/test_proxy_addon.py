@@ -321,3 +321,15 @@ class TestFlowCleanup:
         assert flow.request.content == b""
         assert flow.response.content == b""
         assert flow.websocket.messages == []
+
+    @pytest.mark.xfail(reason="FlowCleanup registration in main.py is Task 3 scope")
+    def test_flowcleanup_ordering_after_geofixaddon(self):
+        """Verify FlowCleanup is added after GeoFixAddon in the addon chain in main.py."""
+        import inspect
+        import src.main as main_module
+        source = inspect.getsource(main_module._start_mitmproxy)
+        geo_pos = source.find("GeoFixAddon")
+        cleanup_pos = source.find("FlowCleanup")
+        assert geo_pos != -1, "GeoFixAddon not found in _start_mitmproxy"
+        assert cleanup_pos != -1, "FlowCleanup not found in _start_mitmproxy"
+        assert geo_pos < cleanup_pos, "FlowCleanup must be added after GeoFixAddon"

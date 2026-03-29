@@ -231,5 +231,5 @@ class FlowCleanup:
         flow.request.content = b""
         if flow.response is not None:
             flow.response.content = b""
-        if flow.websocket is not None and hasattr(flow.websocket, "messages"):
+        if flow.websocket is not None:
             flow.websocket.messages.clear()
