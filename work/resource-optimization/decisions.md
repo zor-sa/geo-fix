@@ -152,7 +152,7 @@ Review details — in JSON files via links. QA report — in logs/working/.
 ## Task 7: Security Audit
 
 **Status:** Done
-**Commit:** pending
+**Commit:** 0d42538
 **Agent:** auditor-security
 **Summary:** Full-feature security audit covering all 10 acceptance criteria: CA key lifecycle, DPAPI state encryption, CSP nonce injection with minimal Master, no direct-connection fallback, FlowCleanup safety, RAM monitor attack surface, idle guard, addon reuse, logging hygiene, and nonce entropy. No critical or high findings. 3 medium (informational): CA key-on-disk window during restart matches initial startup baseline, CSP nonce disables pre-existing unsafe-inline on CSP2+ browsers (acceptable for Google domains), CA uninstall-before-new-master ordering is fail-safe. All security properties preserved through resource-optimization changes.
 **Deviations:** None.
