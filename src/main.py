@@ -250,8 +250,8 @@ def _do_cleanup():
             logger.error("Cleanup error: %s", e)
 
 
-def _get_private_bytes_windows() -> float:
-    """Read Private Working Set via Windows GetProcessMemoryInfo. Returns bytes."""
+def _get_memory_bytes_windows() -> float:
+    """Read PrivateUsage via Windows GetProcessMemoryInfo. Returns bytes."""
     import ctypes
     import ctypes.wintypes
 
@@ -284,7 +284,7 @@ def _get_private_bytes_windows() -> float:
         return 0.0
 
 
-def _get_private_bytes_linux() -> float:
+def _get_memory_mb_linux() -> float:
     """Read VmRSS from /proc/self/status. Returns MB."""
     try:
         with open("/proc/self/status") as f:
@@ -305,8 +305,8 @@ def _get_private_bytes_linux() -> float:
 def _get_process_memory_mb() -> float:
     """Get process memory usage in MB. Windows: PrivateUsage, Linux: VmRSS."""
     if sys.platform == "win32":
-        return _get_private_bytes_windows() / (1024 * 1024)  # bytes to MB
-    return _get_private_bytes_linux()  # already MB
+        return _get_memory_bytes_windows() / (1024 * 1024)  # bytes to MB
+    return _get_memory_mb_linux()  # already MB
 
 
 def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None, port: int = PROXY_PORT) -> tuple[threading.Thread, "Master"]:
@@ -384,6 +384,7 @@ def _restart_mitmproxy(
         logger.warning("Failed to uninstall old CA: %s", e)
 
     # 3. Start new master (generates new CA in confdir)
+    # _start_mitmproxy re-adds the same GeoFixAddon instance + new FlowCleanup()
     try:
         new_thread, new_master = _start_mitmproxy(addon, confdir=confdir, port=port)
     except Exception as e:
@@ -620,7 +621,10 @@ def main():
                     _restart_timestamps.append(_last_restart_time)
                     logger.info("mitmproxy restart complete")
                 else:
-                    logger.error("mitmproxy restart failed — will retry next cycle")
+                    # Set cooldown to prevent immediate re-trigger on dead master
+                    _last_restart_time = time.monotonic()
+                    logger.error("mitmproxy restart failed — cooldown activated, will retry after %d sec",
+                                 _COOLDOWN_SECONDS)
             except Exception as e:
                 logger.error("RAM monitor error: %s", e)
 

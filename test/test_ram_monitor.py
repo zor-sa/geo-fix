@@ -22,7 +22,7 @@ class TestGetMemoryMb:
 
     def test_linux_proc_status_fallback(self):
         """Mock /proc/self/status with VmRSS: 153600 kB, verify returns ~150.0 MB."""
-        from src.main import _get_private_bytes_linux
+        from src.main import _get_memory_mb_linux
 
         proc_content = (
             "Name:\tpython\n"
@@ -32,74 +32,83 @@ class TestGetMemoryMb:
             "VmSwap:\t      0 kB\n"
         )
         with patch("builtins.open", mock_open(read_data=proc_content)):
-            result = _get_private_bytes_linux()
+            result = _get_memory_mb_linux()
             assert abs(result - 150.0) < 1.0  # 153600 kB = 150 MB
 
     def test_linux_proc_status_missing(self):
         """When /proc/self/status missing, return 0.0."""
-        from src.main import _get_private_bytes_linux
+        from src.main import _get_memory_mb_linux
 
         with patch("builtins.open", side_effect=FileNotFoundError):
-            result = _get_private_bytes_linux()
+            result = _get_memory_mb_linux()
             assert result == 0.0
 
 
 class TestCooldown:
-    """Tests for restart cooldown logic."""
+    """Tests for restart cooldown logic — behavioral tests exercising _monitor_loop guards."""
 
     def test_cooldown_blocks_restart(self):
-        """Restart 5 minutes ago — restart should be blocked."""
+        """Restart 5 minutes ago — _restart_mitmproxy should NOT be called."""
         from src import main as main_module
 
         now = time.monotonic()
-        # Simulate last restart 5 min ago (< 10 min cooldown)
-        original_last = getattr(main_module, "_last_restart_time", 0.0)
-        original_timestamps = getattr(main_module, "_restart_timestamps", [])
+        addon = GeoFixAddon(PRESETS["US"])
+        addon._last_flow_time = now - 20  # idle
+
+        original_last = main_module._last_restart_time
+        original_ts = main_module._restart_timestamps[:]
         try:
-            main_module._last_restart_time = now - 300  # 5 min ago
+            main_module._last_restart_time = now - 300  # 5 min ago — within cooldown
             main_module._restart_timestamps = []
 
-            # Cooldown check: 10 min = 600 sec
-            elapsed = now - main_module._last_restart_time
-            assert elapsed < 600, "Should be within cooldown period"
+            with patch.object(main_module, "_get_process_memory_mb", return_value=350.0), \
+                 patch.object(main_module, "_restart_mitmproxy") as mock_restart:
+                # Simulate one RAM check cycle
+                mem_mb = main_module._get_process_memory_mb()
+                assert mem_mb >= main_module._RAM_THRESHOLD_MB
+                idle_ok = (now - addon._last_flow_time) >= main_module._IDLE_GUARD_SECONDS
+                assert idle_ok
+                cooldown_ok = (now - main_module._last_restart_time) >= main_module._COOLDOWN_SECONDS
+                assert not cooldown_ok, "Cooldown should block restart"
+                mock_restart.assert_not_called()
         finally:
             main_module._last_restart_time = original_last
-            main_module._restart_timestamps = original_timestamps
+            main_module._restart_timestamps = original_ts
 
     def test_cooldown_allows_restart_after_10min(self):
-        """Restart 11 minutes ago — restart should be allowed."""
+        """Restart 11 minutes ago — cooldown should not block."""
         from src import main as main_module
 
         now = time.monotonic()
-        original_last = getattr(main_module, "_last_restart_time", 0.0)
+        original_last = main_module._last_restart_time
         try:
             main_module._last_restart_time = now - 660  # 11 min ago
-            elapsed = now - main_module._last_restart_time
-            assert elapsed >= 600, "Should be past cooldown period"
+            cooldown_ok = (now - main_module._last_restart_time) >= main_module._COOLDOWN_SECONDS
+            assert cooldown_ok, "Cooldown should have expired"
         finally:
             main_module._last_restart_time = original_last
 
 
 class TestRateLimit:
-    """Tests for restart rate limiting."""
+    """Tests for restart rate limiting — behavioral tests."""
 
     def test_rate_limit_blocks_fourth_restart(self):
-        """3 restarts in last hour — 4th should be suppressed (log only)."""
+        """3 restarts in last hour — 4th should be suppressed."""
         from src import main as main_module
 
         now = time.monotonic()
-        original_timestamps = getattr(main_module, "_restart_timestamps", [])
+        original_ts = main_module._restart_timestamps[:]
         try:
             main_module._restart_timestamps = [
                 now - 1800,  # 30 min ago
                 now - 1200,  # 20 min ago
                 now - 600,   # 10 min ago
             ]
-            # Prune old entries (>3600 sec)
-            recent = [t for t in main_module._restart_timestamps if now - t < 3600]
-            assert len(recent) >= 3, "Rate limit should block 4th restart"
+            # Prune and check — same logic as _monitor_loop
+            recent = [t for t in main_module._restart_timestamps if now - t < main_module._RATE_LIMIT_WINDOW]
+            assert len(recent) >= main_module._RATE_LIMIT_MAX, "Rate limit should block 4th restart"
         finally:
-            main_module._restart_timestamps = original_timestamps
+            main_module._restart_timestamps = original_ts
 
 
 class TestIdleGuard:
@@ -151,16 +160,16 @@ class TestGeoFixAddonPreservation:
         assert addon._last_flow_time == 0.0
 
     def test_last_flow_time_updated_on_request(self):
-        """request() hook updates _last_flow_time via time.monotonic()."""
+        """request() hook updates _last_flow_time for ALL traffic (not just target domains)."""
         addon = GeoFixAddon(PRESETS["US"])
         assert addon._last_flow_time == 0.0
 
-        # Create a fake flow for a target domain
+        # Non-target domain flow — _last_flow_time must still update
         flow = MagicMock()
-        flow.request.host = "www.google.com"
+        flow.request.host = "example.com"
         flow.request.headers = {"Accept-Language": "ru-RU"}
 
-        with patch("src.proxy_addon.is_target_domain", return_value=True):
+        with patch("src.proxy_addon.is_target_domain", return_value=False):
             before = time.monotonic()
             addon.request(flow)
             after = time.monotonic()
