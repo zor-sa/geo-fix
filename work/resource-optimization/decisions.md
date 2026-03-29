@@ -101,3 +101,22 @@ Review details — in JSON files via links. QA report — in logs/working/.
 **Verification:**
 - `pytest test/test_ram_monitor.py -v` → 17 passed
 - `pytest test/ -x` → 231 passed, 13 skipped
+
+## Task 4: Minor CPU optimizations in proxy_addon
+
+**Status:** Done
+**Commit:** 647a1fc
+**Agent:** coder-cpu
+**Summary:** Eliminated `html_text.lower()` full-string copy in `_find_inject_position()` by switching to `re.search()` with `re.IGNORECASE`. Replaced Python `for` loop in `is_target_domain()` with `str.endswith(tuple)` and pre-computed `frozenset` for bare domain lookup. Both optimizations reduce per-call allocations on the hot path with identical behavior.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved (2 minor optional) → [logs/working/task-4/code-reviewer-round1.json]
+- security-auditor: approved (1 minor informational) → [logs/working/task-4/security-auditor-1.json]
+- test-reviewer: passed (5 minor) → [logs/working/task-4/test-reviewer-1.json]
+
+**Verification:**
+- `pytest test/test_proxy_addon.py test/test_presets.py -v` → 77 passed
+- `pytest test/ -x` → 237 passed, 13 skipped
