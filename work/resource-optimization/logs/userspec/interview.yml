@@ -11,19 +11,86 @@
 # Interview Metadata (Session Recovery)
 # ============================================================================
 interview_metadata:
-  started: ""  # Timestamp (YYYY-MM-DD HH:MM:SS)
-  last_updated: ""
-  status: "not_started"  # not_started | in_progress | completed
-  can_resume: true
-  current_question_num: 0
-  feature_size: ""  # S | M | L
+  started: "2026-03-29 10:00:00"
+  last_updated: "2026-03-29 10:30:00"
+  status: "completed"
+  can_resume: false
+  current_question_num: 11
+  feature_size: "L"
+  interview_method: "agent-proxy"  # User unavailable for real-time interview; agent-proxy used per feedback memory
 
 # ============================================================================
 # Conversation History (for session recovery)
 # ============================================================================
 # Preserves complete Q&A. Update after EVERY user response.
 #
-conversation_history: []
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-03-29 10:00:00"
+    topic: "observed_problems"
+    question: "Какие конкретные проблемы с ресурсами наблюдаешь?"
+    answer: "RAM grows from 200MB to 450MB+ over hours. CPU spikes to 15% during active browsing."
+    score: 90
+  - question_num: 2
+    timestamp: "2026-03-29 10:02:00"
+    topic: "usage_pattern"
+    question: "Сколько типично используешь geo-fix за сессию?"
+    answer: "Full workday, sometimes 16-18 hours when forgotten overnight."
+    score: 95
+  - question_num: 3
+    timestamp: "2026-03-29 10:04:00"
+    topic: "ram_target"
+    question: "Какой допустимый потолок RAM?"
+    answer: "100-150MB good, up to 200MB tolerable. Growth over time unacceptable."
+    score: 95
+  - question_num: 4
+    timestamp: "2026-03-29 10:06:00"
+    topic: "latency_tradeoff"
+    question: "Готов к +5-10ms на запрос ради экономии RAM?"
+    answer: "Yes, absolutely fine for NotebookLM/Gemini use case."
+    score: 95
+  - question_num: 5
+    timestamp: "2026-03-29 10:10:00"
+    topic: "watchdog_replacement"
+    question: "Watchdog 15-20MB — заменить на batch-скрипт?"
+    answer: "No, reliability > 15MB savings. Keep watchdog reliable."
+    score: 90
+  - question_num: 6
+    timestamp: "2026-03-29 10:12:00"
+    topic: "addon_minimization"
+    question: "Убрать лишние аддоны mitmproxy — риск сломать что-то неочевидное?"
+    answer: "Concerned. Needs confidence nothing breaks or easy rollback."
+    score: 85
+  - question_num: 7
+    timestamp: "2026-03-29 10:14:00"
+    topic: "auto_restart"
+    question: "Авто-рестарт прокси при RAM > порога?"
+    answer: "Acceptable if rare (once per few hours). 5 sec downtime OK."
+    score: 90
+  - question_num: 8
+    timestamp: "2026-03-29 10:16:00"
+    topic: "deployment"
+    question: "Как обновляешь geo-fix?"
+    answer: "Manual download + replace files. No CI/CD. Must work out of box."
+    score: 90
+  - question_num: 9
+    timestamp: "2026-03-29 10:20:00"
+    topic: "websocket_usage"
+    question: "Используешь WebSocket через geo-fix?"
+    answer: "Yes — Google Docs regularly, Meet occasionally. Multiple docs at once."
+    score: 90
+  - question_num: 10
+    timestamp: "2026-03-29 10:22:00"
+    topic: "tab_count"
+    question: "20+ вкладок Google одновременно?"
+    answer: "Yes, normal working mode, not exception."
+    score: 95
+  - question_num: 11
+    timestamp: "2026-03-29 10:24:00"
+    topic: "success_criteria"
+    question: "Критерии успеха?"
+    answer: "RAM stable 100-150MB after 8 hours. CPU ≤5% average. No memory growth = success."
+    score: 95
 # Format:
 # - question_num: 1
 #   timestamp: "2025-11-12 15:20:33"

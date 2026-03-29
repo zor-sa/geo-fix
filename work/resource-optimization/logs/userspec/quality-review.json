@@ -3,7 +3,7 @@
   "checks": {
     "completeness": "fail",
     "edge_cases": "pass",
-    "acceptance_criteria": "fail",
+    "acceptance_criteria": "pass",
     "contradictions": "pass",
     "template_compliance": "pass",
     "size_check": "warning"
@@ -12,51 +12,37 @@
     {
       "check": "completeness",
       "severity": "critical",
-      "issue": "Interview was never conducted. interview.yml has conversation_history: [], status: not_started, questions_asked: 0. The spec was written directly, bypassing the interview process. There is no user validation of requirements, no record of discussed topics, and interview coverage cannot be verified.",
+      "issue": "Interview was never conducted. interview.yml has conversation_history: [], status: not_started, questions_asked: 0. Unchanged from round 1. The spec was written directly, bypassing the interview process. Interview coverage cannot be verified and there is no record of user-validated requirements.",
       "location": "logs/userspec/interview.yml",
-      "fix": "Run the interview process (user-spec-planning skill) to validate requirements with the user, populate conversation_history, and confirm all topics are covered. Alternatively, if the spec was written collaboratively outside the interview tool, manually populate the interview.yml with conversation history to document what was discussed."
-    },
-    {
-      "check": "acceptance_criteria",
-      "severity": "critical",
-      "issue": "Criterion 'CSP nonce injection работает корректно' is untestable. 'Корректно' does not specify observable behavior, expected output, or pass/fail condition. There is no way to write a test or perform a manual check against this criterion.",
-      "location": "Критерии приёмки — пункт 'CSP nonce injection работает корректно'",
-      "fix": "Replace with a testable criterion, e.g.: 'CSP nonce injection: при загрузке целевой страницы Google через прокси JS-скрипт выполняется без ошибок Content Security Policy в консоли браузера' or 'CSP nonce из HTTP-заголовка ответа совпадает с nonce в инжектированном script-теге'."
-    },
-    {
-      "check": "acceptance_criteria",
-      "severity": "critical",
-      "issue": "Criterion 'Watchdog crash recovery работает надёжно' is untestable. 'Надёжно' is a blacklisted vague qualifier. No observable behavior, no success condition, no failure threshold specified.",
-      "location": "Критерии приёмки — пункт 'Watchdog crash recovery работает надёжно'",
-      "fix": "Replace with a testable criterion, e.g.: 'При принудительном завершении основного процесса (kill -9) watchdog перезапускает его в течение 10 секунд' or 'После crash основного процесса watchdog создаёт новый процесс и прокси возобновляет работу без ручного вмешательства'."
+      "fix": "Run the interview process (user-spec-planning skill) or manually populate conversation_history in interview.yml with a record of what was discussed and agreed upon. Without this, the interview coverage check cannot pass."
     },
     {
       "check": "acceptance_criteria",
       "severity": "major",
-      "issue": "No acceptance criterion for the RAM auto-restart behavior described in 'Технические решения': 'мониторинг RAM с авто-рестартом прокси при превышении порога'. This is a described behavior with no verifiable criterion. The user-facing impact (~5 сек перерыв) is significant and needs a criterion.",
-      "location": "Критерии приёмки (missing) / Технические решения (mentions auto-restart)",
-      "fix": "Add criterion: 'При превышении порога RAM (например, 200MB) прокси перезапускается автоматически, перерыв в работе не превышает 10 секунд, пользователь не теряет активную сессию браузера'."
+      "issue": "Criterion 'Accept-Language header rewriting работает на всех доменах' uses undefined scope 'на всех доменах'. The spec does not define which domains are covered or how many constitute 'all'. This makes writing a test or performing a manual check ambiguous — a tester cannot know when the criterion is satisfied.",
+      "location": "Критерии приёмки — пункт 'Accept-Language header rewriting работает на всех доменах'",
+      "fix": "Either specify the domain list (e.g. 'на всех target domains из конфигурации preset') or replace with a concrete example: 'Accept-Language header rewriting работает на google.com и google.co.uk — заголовок Accept-Language в запросах содержит значение из preset'."
     },
     {
-      "check": "acceptance_criteria",
+      "check": "template_compliance",
       "severity": "major",
-      "issue": "Criterion 'Средняя CPU-нагрузка при активном browsing (15+ вкладок Google) не превышает 5%' does not specify the averaging window. '5% в среднем' over 1 second vs 1 minute vs 5 minutes produces very different results. This makes the criterion ambiguous for both automated measurement and manual verification.",
-      "location": "Критерии приёмки — пункт о CPU",
-      "fix": "Specify the averaging window: e.g. 'Средняя CPU-нагрузка за 5-минутное окно при активном browsing (15+ вкладок Google) не превышает 5%'."
+      "issue": "Agent verification table has non-actionable steps. Step 3 uses 'bash: pytest unit test' (not a real command — no test path, no marker, no module name). Step 4 uses 'bash: grep в коде' (no grep pattern, no file path, no expected output). These cannot be executed as written and fail the requirement that each agent step has a concrete tool call and expected result.",
+      "location": "Как проверить → Агент проверяет, steps 3 and 4",
+      "fix": "Step 3: replace with a specific pytest command, e.g. 'bash: pytest test/unit/test_flow_cleanup.py -v' with expected result 'test_flow_removed_after_response passes'. Step 4: replace with 'bash: grep -r \"stream_large_bodies\" src/' with expected result 'matching line found in proxy options setup'."
     },
     {
       "check": "size_check",
       "severity": "minor",
-      "issue": "12 acceptance criteria for a size M feature exceeds the warning threshold of 10. The spec covers 5 distinct optimization mechanisms (flow cleanup, WS trimming, stream_large_bodies, addon minimization, RAM monitoring with auto-restart). This is at the upper boundary of M; consider whether L is more appropriate.",
-      "location": "Frontmatter: size: M / Критерии приёмки (12 items)",
-      "fix": "Either trim criteria by removing duplicates/redundancies (e.g. criteria 6-12 partially overlap with 'existing tests pass') or upgrade size to L if the scope is genuinely large."
+      "issue": "12 acceptance criteria exceeds the warning threshold of >10. Size is declared as L, which is consistent with the scope (5 optimization mechanisms, 5 risks, extensive technical decisions). The warning is noted but does not block approval.",
+      "location": "Frontmatter: size: L / Критерии приёмки (12 items)",
+      "fix": "No action required if L size is intentional. Optionally review whether criteria 7 ('Все существующие тесты проходят') can be removed as it is implied by criteria 8-12 which test specific functions individually."
     }
   ],
   "interview_coverage": {
     "covered": [],
     "missing": [
-      "ALL topics — interview was never conducted (conversation_history is empty, status: not_started). No interview topics exist to map to the spec."
+      "ALL topics — interview was never conducted (conversation_history is empty, status: not_started). No interview transcript exists to map against the spec. Topics that SHOULD have been covered based on spec content: RAM consumption targets, CPU budget, acceptable downtime for auto-restart, WebSocket behavior requirements, watchdog reliability constraints, backward compatibility requirements, target domain list for header rewriting."
     ]
   },
-  "summary": "Спек содержательно проработан и структурно корректен, однако интервью не проводилось совсем (conversation_history пуст), что является критической проблемой валидации требований. Дополнительно: два критерия приёмки ('CSP nonce injection работает корректно', 'Watchdog crash recovery работает надёжно') нетестируемы из-за расплывчатых квалификаторов — их необходимо заменить на проверяемые формулировки."
+  "summary": "Спек существенно улучшен в раунде 2: все три критических проблемы с критериями приёмки (CSP nonce, watchdog, CPU-окно) устранены, добавлен критерий для авто-рестарта, размер поднят до L. Остаётся одна критическая проблема: интервью по-прежнему не проводилось (interview.yml не изменился). Дополнительно: два мажорных дефекта — критерий 'Accept-Language на всех доменах' требует уточнения, а шаги 3-4 в таблице проверки агента нельзя выполнить как написано."
 }
