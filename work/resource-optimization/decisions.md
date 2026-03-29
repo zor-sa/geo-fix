@@ -77,3 +77,27 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 **Verification:**
 - `pytest test/test_proxy_addon.py -v` → 34 passed, 1 xfailed
+
+## Task 3: Add RAM monitoring with proxy auto-restart
+
+**Status:** Done
+**Commit:** 7d7fe7e
+**Agent:** coder-ram
+**Summary:** Extended `_monitor_loop` with RAM monitoring: checks process memory every 60 seconds via ctypes (Windows) or `/proc/self/status` (Linux), restarts mitmproxy thread if >300MB with idle guard (10s), cooldown (10min), and rate limit (max 3/hour). Extracted `_should_restart()` as testable pure function. Registered `FlowCleanup` as last addon in `_start_mitmproxy()`. Key security decision: CA key files deleted on all restart paths including failure — reviewed and confirmed by security auditor.
+**Deviations:** Extracted `_should_restart()` helper not in original spec — added during test review to make guard logic independently testable.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: changes_required (1 critical, 3 major) → [logs/working/task-3/code-reviewer-t3-round1.json]
+- security-auditor: changes_required (1 major, 3 minor) → [logs/working/task-3/security-auditor-t3-round1.json]
+- test-reviewer: failed (7 major) → [logs/working/task-3/test-reviewer-t3-round1.json]
+
+*Round 2 (after fixes):*
+- code-reviewer: approved → [logs/working/task-3/code-reviewer-t3-round2.json]
+- security-auditor: approved → [logs/working/task-3/security-auditor-t3-round2.json]
+- test-reviewer: passed (3 minor) → [logs/working/task-3/test-reviewer-t3-round2.json]
+
+**Verification:**
+- `pytest test/test_ram_monitor.py -v` → 17 passed
+- `pytest test/ -x` → 231 passed, 13 skipped
