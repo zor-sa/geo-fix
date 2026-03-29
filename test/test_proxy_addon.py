@@ -306,7 +306,7 @@ class TestFlowCleanup:
         cleanup_addon.websocket_message(flow)
         assert flow.websocket.messages == []
 
-    def test_flowcleanup_websocket_end_removes_flow(self, cleanup_addon):
+    def test_flowcleanup_websocket_end_clears_content(self, cleanup_addon):
         """websocket_end clears request/response content to release memory."""
         flow = self._make_flow()
 
