@@ -423,7 +423,7 @@ def install_ca_cert(confdir: str) -> Optional[str]:
 
     try:
         result = subprocess.run(
-            ["certutil", "-addstore", "-user", "Root", str(cert_path)],
+            ["certutil", "-f", "-addstore", "-user", "Root", str(cert_path)],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
