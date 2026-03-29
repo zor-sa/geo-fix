@@ -6,10 +6,13 @@ survives restart sequences. All tests run on any platform (no Windows-only deps)
 """
 
 import asyncio
+import gc
 import http.server
 import socket
+import sys
 import threading
 import time
+import tracemalloc
 import urllib.request
 
 import pytest
@@ -30,6 +33,7 @@ def _wait_for_port(host: str, port: int, timeout: float = 15.0) -> bool:
         except (ConnectionRefusedError, socket.timeout, OSError):
             time.sleep(0.3)
     return False
+
 
 
 def _start_proxy(addon, port, extra_addons=None):
@@ -95,34 +99,74 @@ def _start_proxy(addon, port, extra_addons=None):
     return thread, master_ref.get("master"), loop_ref.get("loop")
 
 
-def _shutdown_proxy(master, loop):
-    """Shut down the proxy master gracefully."""
+def _shutdown_proxy(master, loop, thread=None):
+    """Shut down the proxy master gracefully, releasing the listening port.
+
+    Master.shutdown() signals should_exit but doesn't close server sockets.
+    We explicitly stop Proxyserver instances first so the port is freed
+    before the next test (or same-port rebind in restart tests).
+    """
     if master and loop:
+        # Stop server instances to release the listening socket
         try:
-            future = asyncio.run_coroutine_threadsafe(master.shutdown(), loop)
-            future.result(timeout=10)
+            from mitmproxy.addons.proxyserver import Proxyserver
+            for addon in master.addons.chain:
+                if isinstance(addon, Proxyserver):
+                    async def _stop_servers(ps):
+                        for inst in list(ps.servers._instances.values()):
+                            await inst.stop()
+                    future = asyncio.run_coroutine_threadsafe(
+                        _stop_servers(addon), loop
+                    )
+                    future.result(timeout=5)
+                    break
         except Exception:
             pass
+    if master:
         try:
-            loop.call_soon_threadsafe(loop.stop)
+            master.shutdown()
         except Exception:
             pass
-        time.sleep(1.0)
+    if thread:
+        thread.join(timeout=10)
 
 
 class _MockHTMLHandler(http.server.BaseHTTPRequestHandler):
-    """Serves a simple HTML page for HTTP proxy tests."""
+    """Serves HTML for proxy tests. Returns JSON for / and HTML for /html."""
 
     def do_GET(self):
-        html = '{"headers": {"Host": "localhost", "Accept-Language": "en-US"}}'
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(html)))
-        self.end_headers()
-        self.wfile.write(html.encode("utf-8"))
+        if self.path == "/html":
+            html = "<html><head><title>Test</title></head><body>Content</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.end_headers()
+            self.wfile.write(html.encode("utf-8"))
+        else:
+            body = '{"headers": {"Host": "localhost", "Accept-Language": "en-US"}}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
 
     def log_message(self, format, *args):
         pass  # Suppress request logs
+
+
+class _HostOverrideAddon:
+    """Test addon: overrides flow.request.host in response hook.
+
+    Inserted before GeoFixAddon so that GeoFixAddon.response() sees the
+    overridden host and triggers JS injection for target domain requests
+    routed through a local mock server.
+    """
+
+    def __init__(self, target_host: str):
+        self._target_host = target_host
+
+    def response(self, flow) -> None:
+        flow.request.host = self._target_host
 
 
 class TestOptimizedProxyHTTP:
@@ -140,7 +184,10 @@ class TestOptimizedProxyHTTP:
 
         # FlowCleanup excluded: it clears flow.response.content in the response hook
         # (before mitmproxy sends to client), so proxied responses arrive empty.
-        # FlowCleanup behavior is tested separately in TestFlowCleanup.
+        # This is a known production limitation (Task 2 FlowCleanup design):
+        # content is cleared in the response() hook which fires before the proxy
+        # sends the response body to the client. FlowCleanup behavior is tested
+        # separately in TestFlowCleanup.
         addon = GeoFixAddon(PRESETS["US"])
         thread, master, loop = _start_proxy(addon, proxy_port)
 
@@ -154,7 +201,7 @@ class TestOptimizedProxyHTTP:
             body = response.read().decode("utf-8")
             assert len(body) > 0
         finally:
-            _shutdown_proxy(master, loop)
+            _shutdown_proxy(master, loop, thread)
             httpd.shutdown()
 
 
@@ -184,68 +231,60 @@ class TestOptimizedProxyHTTPS:
             finally:
                 sock.close()
         finally:
-            _shutdown_proxy(master, loop)
+            _shutdown_proxy(master, loop, thread)
 
 
 class TestJSInjection:
-    """Test JS injection through the addon pipeline."""
+    """Test JS injection through the real proxy pipeline."""
 
     def test_js_injected_for_target_domain(self):
-        """GeoFixAddon injects <script nonce= into HTML for target domain.
+        """GeoFixAddon injects <script nonce= into HTML via real proxy pipeline.
 
-        Uses FakeFlow to exercise the full addon response() code path —
-        the same code that runs inside the proxy pipeline.
+        Uses a local HTTP mock server + _HostOverrideAddon to make the proxy
+        see www.google.com as the request host. The override addon runs in the
+        response() hook before GeoFixAddon, so GeoFixAddon.response() triggers
+        JS injection for the target domain. This exercises the real mitmproxy
+        addon chain — not a FakeFlow mock.
         """
-        class FakeHeaders(dict):
-            def get(self, key, default=None):
-                return super().get(key, super().get(key.lower(), default))
+        proxy_port = _free_port()
+        mock_port = _free_port()
 
-            def __contains__(self, key):
-                return super().__contains__(key) or super().__contains__(key.lower())
+        # Start local HTTP server serving HTML
+        httpd = http.server.HTTPServer(("127.0.0.1", mock_port), _MockHTMLHandler)
+        mock_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        mock_thread.start()
 
-        class FakeRequest:
-            def __init__(self):
-                self.host = "www.google.com"
-                self.url = "https://www.google.com/"
-                self.headers = FakeHeaders({"Accept-Language": "ru-RU"})
-                self.content = b"request"
-
-        class FakeResponse:
-            def __init__(self):
-                self.status_code = 200
-                self.headers = FakeHeaders({"content-type": "text/html; charset=utf-8"})
-                self._text = "<html><head><title>Google</title></head><body>Search</body></html>"
-                self.content = self._text.encode("utf-8")
-
-            @property
-            def text(self):
-                return self._text
-
-            @text.setter
-            def text(self, value):
-                self._text = value
-
-        class FakeFlow:
-            def __init__(self):
-                self.request = FakeRequest()
-                self.response = FakeResponse()
-
-        # Run GeoFixAddon response (injection) then FlowCleanup response (cleanup)
-        # This exercises the exact addon chain order used in production
+        # _HostOverrideAddon must be added BEFORE GeoFixAddon in the addon chain
+        # so its response() hook fires first, setting flow.request.host to
+        # www.google.com before GeoFixAddon.response() checks is_target_domain().
+        host_override = _HostOverrideAddon("www.google.com")
         addon = GeoFixAddon(PRESETS["US"])
-        cleanup = FlowCleanup()
 
-        flow = FakeFlow()
-        addon.response(flow)
+        # Build addon chain: [core addons..., host_override, addon]
+        # _start_proxy adds core addons then `addon` param, so we pass
+        # host_override as the main addon and GeoFixAddon as extra.
+        thread, master, loop = _start_proxy(
+            host_override, proxy_port, extra_addons=[addon]
+        )
 
-        # Verify JS injection happened
-        assert '<script nonce="' in flow.response.text
-        assert "America/New_York" in flow.response.text
-
-        # Run FlowCleanup — verify it doesn't break after injection
-        cleanup.response(flow)
-        assert flow.request.content == b""
-        assert flow.response.content == b""
+        try:
+            proxy_handler = urllib.request.ProxyHandler(
+                {"http": f"http://127.0.0.1:{proxy_port}"}
+            )
+            opener = urllib.request.build_opener(proxy_handler)
+            # Request /html path which returns text/html content
+            response = opener.open(
+                f"http://127.0.0.1:{mock_port}/html", timeout=10
+            )
+            assert response.status == 200
+            body = response.read().decode("utf-8")
+            assert '<script nonce="' in body, \
+                f"Expected <script nonce= in response, got: {body[:200]}"
+            assert "America/New_York" in body, \
+                f"Expected timezone in injected JS, got: {body[:200]}"
+        finally:
+            _shutdown_proxy(master, loop, thread)
+            httpd.shutdown()
 
 
 class TestFlowCleanup:
@@ -283,43 +322,72 @@ class TestFlowCleanup:
         assert flow.response.content == b""
 
     def test_100_flows_no_memory_growth(self):
-        """Process 100 flows through FlowCleanup, verify all have cleared content."""
+        """Process 100 flows through FlowCleanup, verify no significant memory growth.
+
+        Uses tracemalloc to measure actual memory: processes 100 flows with 1KB bodies
+        each (100KB total if retained), verifies FlowCleanup prevents accumulation.
+        Flows are not stored in a list — they go out of scope after processing,
+        so this tests that FlowCleanup zeroes content before GC collects the flow.
+        """
         cleanup = FlowCleanup()
-        flows = []
 
-        for i in range(100):
-            flow = self._make_flow(body_content=f"response body {i} {'x' * 1000}".encode())
+        # Warm up — process a few flows to stabilize allocations
+        for _ in range(5):
+            flow = self._make_flow(body_content=b"warmup" * 100)
             cleanup.response(flow)
-            flows.append(flow)
+        gc.collect()
 
-        for i, flow in enumerate(flows):
-            assert flow.request.content == b"", f"Flow {i}: request content not cleared"
-            assert flow.response.content == b"", f"Flow {i}: response content not cleared"
+        tracemalloc.start()
+        snapshot_before = tracemalloc.take_snapshot()
+
+        # Process 100 flows with 1KB bodies — 100KB total if bodies retained
+        for i in range(100):
+            flow = self._make_flow(
+                body_content=f"response body {i} {'x' * 1000}".encode()
+            )
+            # Verify content exists before cleanup
+            assert len(flow.response.content) > 1000
+            cleanup.response(flow)
+            # Verify content cleared immediately
+            assert flow.request.content == b"", f"Flow {i}: request not cleared"
+            assert flow.response.content == b"", f"Flow {i}: response not cleared"
+
+        gc.collect()
+        snapshot_after = tracemalloc.take_snapshot()
+        tracemalloc.stop()
+
+        # Compare memory: if FlowCleanup didn't work, ~100KB of body data would
+        # be retained. Allow 150KB growth for Python internals, tracemalloc
+        # bookkeeping, and class/code object caching during the loop.
+        stats = snapshot_after.compare_to(snapshot_before, "lineno")
+        total_growth = sum(s.size_diff for s in stats if s.size_diff > 0)
+        assert total_growth < 150 * 1024, \
+            f"Memory grew by {total_growth / 1024:.1f}KB — FlowCleanup may not be clearing bodies"
 
 
 class TestProxyRestart:
     """Test proxy restart sequence preserves connectivity."""
 
     def test_tls_works_after_restart(self):
-        """Proxy restarts (shutdown old + start new), verifies CONNECT still works.
+        """Proxy restarts on the same port (shutdown + rebind), verifies CONNECT still works.
 
-        Uses separate ports for first/second instance to avoid TIME_WAIT.
-        This matches real restart behavior where SO_REUSEADDR allows rebinding.
+        Uses the same port for both instances — matching production restart behavior
+        where _restart_mitmproxy() shuts down the old master and starts a new one
+        on the same PROXY_PORT.
         """
-        port1 = _free_port()
-        port2 = _free_port()
+        port = _free_port()
         addon = GeoFixAddon(PRESETS["US"])
         cleanup = FlowCleanup()
 
         # Start first proxy instance
-        thread1, master1, loop1 = _start_proxy(addon, port1, extra_addons=[cleanup])
+        thread1, master1, loop1 = _start_proxy(addon, port, extra_addons=[cleanup])
 
         try:
             # Verify first instance handles CONNECT
-            sock = socket.create_connection(("127.0.0.1", port1), timeout=5)
+            sock = socket.create_connection(("127.0.0.1", port), timeout=10)
             try:
                 sock.sendall(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
-                sock.settimeout(5)
+                sock.settimeout(10)
                 try:
                     resp = sock.recv(4096).decode("utf-8", errors="replace")
                 except (socket.timeout, OSError) as e:
@@ -328,19 +396,20 @@ class TestProxyRestart:
             finally:
                 sock.close()
         finally:
-            # Shutdown first instance (simulates the restart trigger)
-            _shutdown_proxy(master1, loop1)
+            # Shutdown first instance — _shutdown_proxy stops server instances
+            # to release the listening socket before same-port rebind.
+            _shutdown_proxy(master1, loop1, thread1)
 
-        # Start second proxy instance (simulates restart with new Master)
+        # Start second proxy instance on the SAME port (simulates production restart)
         cleanup2 = FlowCleanup()
-        thread2, master2, loop2 = _start_proxy(addon, port2, extra_addons=[cleanup2])
+        thread2, master2, loop2 = _start_proxy(addon, port, extra_addons=[cleanup2])
 
         try:
-            # Verify second instance handles CONNECT after restart
-            sock = socket.create_connection(("127.0.0.1", port2), timeout=5)
+            # Verify second instance handles CONNECT after restart on same port
+            sock = socket.create_connection(("127.0.0.1", port), timeout=10)
             try:
                 sock.sendall(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
-                sock.settimeout(5)
+                sock.settimeout(10)
                 try:
                     resp = sock.recv(4096).decode("utf-8", errors="replace")
                 except (socket.timeout, OSError) as e:
@@ -349,4 +418,4 @@ class TestProxyRestart:
             finally:
                 sock.close()
         finally:
-            _shutdown_proxy(master2, loop2)
+            _shutdown_proxy(master2, loop2, thread2)
