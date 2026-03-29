@@ -1,0 +1,91 @@
+{
+  "validator": "reality-checker",
+  "batch": 3,
+  "iteration": 1,
+  "tasks_reviewed": [7, 8, 9],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 7,
+      "issue": "FlowCleanup class does not exist in src/proxy_addon.py. Task 7 audits security properties of FlowCleanup (addon ordering, content clearing, websocket_message/websocket_end hooks), but the class has not yet been implemented. The file ends at line 204 with only GeoFixAddon defined. Tasks 1-4 (waves 1-2) must complete before wave 4 audit tasks can run.",
+      "fix": "Mark task 7 as blocked on task 2 completing. Add depends_on: [2] (FlowCleanup) and depends_on: [1] (minimal Master) to task 7's frontmatter. Currently only depends_on: [5] is declared, which is insufficient — task 5 (integration tests) depends on tasks 1-4, but that chain is not explicit in task 7's own dependencies."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 7,
+      "issue": "RAM monitor (memory checking + restart logic) does not exist in src/main.py. The _monitor_loop() function (lines 410-437) only checks VPN status and watchdog health — there is no GetProcessMemoryInfo call, no restart sequence, no cooldown/rate-limit logic, and no _last_flow_time idle guard check. Task 7 is asked to audit these non-existent code paths in detail.",
+      "fix": "Task 7 must depend on task 3 (RAM monitor implementation) completing. Add depends_on: [3] to frontmatter. Until task 3 is done, the audit sections for 'RAM monitor — no code execution paths', 'idle guard', 'restart rate limit', 'CA key lifecycle on restart', and 'DPAPI state on restart' cannot be performed."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 7,
+      "issue": "GeoFixAddon._last_flow_time attribute does not exist. Task 7 explicitly audits that '_last_flow_time' is tracked via time.monotonic() in the request() hook. The actual GeoFixAddon.request() (lines 144-150) only rewrites Accept-Language — there is no timestamp tracking. This is a hallucinated property in the audit scope.",
+      "fix": "This attribute is supposed to be added by task 3 (RAM monitor implementation). Confirm task 3 adds _last_flow_time to GeoFixAddon before task 7 audits it. The audit checklist item is valid in intent but premature without the implementation."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 7,
+      "issue": "_start_mitmproxy() still uses DumpMaster (src/main.py lines 245, 252). Task 7 audits the minimal Master setup including the 6-addon chain (Core, Proxyserver, NextLayer, TlsConfig, KeepServing, ErrorCheck). This code does not exist yet — task 1 has not been executed. Task 7 cannot audit what is not implemented.",
+      "fix": "Add depends_on: [1] to task 7's frontmatter. The CSP nonce audit section ('no dependency on DumpMaster-specific addons removed') is specifically tied to the DumpMaster → Master migration in task 1."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 8,
+      "issue": "Three test files mentioned in task 8's audit scope do not exist: test/test_master_setup.py, test/test_ram_monitor.py, test/test_flow_cleanup.py. Task 8 says 'any new unit test files created by Tasks 1-4 (e.g., test/test_master_setup.py, test/test_ram_monitor.py, test/test_flow_cleanup.py)' — none of these are present. The glob test/test_*.py returns only pre-existing files.",
+      "fix": "These files are expected artifacts of tasks 1-4. Task 8 is a wave-4 audit that should run after implementation waves complete. The task already says 'if Task 5 is not yet complete, read whatever is available and note the gap' — extend this same allowance explicitly to tasks 1-4 unit test files. The agent executing task 8 should be instructed to note gaps rather than fail if these files are absent."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 9,
+      "issue": "Task 9 acceptance criteria require verifying FlowCleanup, RAM monitor, and minimal Master — none of which are implemented yet. The QA task is a wave-5 final gate and correctly declares depends_on: [6, 7, 8], but tasks 6/7/8 themselves do not enforce that tasks 1-5 are complete first. If audits run prematurely (before implementation), task 9 will attempt to verify non-existent code.",
+      "fix": "Ensure the dependency chain is fully enforced: tasks 1-4 → task 5 → tasks 6/7/8 → task 9. Tasks 7 and 8 are missing depends_on entries for tasks 1-4 (they only declare depends_on: [5]). Since task 5 itself requires tasks 1-4, the chain is implicit but not declared. For safety, add depends_on: [1, 2, 3, 4, 5] to tasks 7 and 8."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "Task 8 states 'TestProxyStartsAndInjects.test_proxy_starts_and_rewrites_header currently uses DumpMaster directly (line 45)'. The actual line 45 of test_integration_windows.py is part of the run_proxy inner function; DumpMaster is imported at line 45 and instantiated at line 48. The line reference is slightly off (the import is line 45, instantiation is line 48) but the claim that DumpMaster is used is correct.",
+      "fix": "Minor: update the line reference in task 8 Details section from 'line 45' to 'lines 45-48' for accuracy. The audit intent is correct — this test will need updating after task 1 completes."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Task 7 instructs the auditor to write the report to logs/working/task-7/security-auditor-1.json. The directory logs/working/ exists but is empty — logs/working/task-7/ does not yet exist. The agent will need to create it. This is not a blocker but should be explicit.",
+      "fix": "Add a note to task 7's 'What to do' step 5: 'Create directory logs/working/task-7/ if it does not exist before writing the report.'"
+    },
+    {
+      "severity": "major",
+      "category": "tdd",
+      "task": 8,
+      "issue": "Task 8 references test_proxy_addon.py as covering 'FlowCleanup (added by Task 2)' in its Details section: 'test/test_proxy_addon.py — existing unit tests for GeoFixAddon, helper functions, FlowCleanup (added by Task 2)'. The actual test_proxy_addon.py (223 lines) contains no FlowCleanup tests — only GeoFixAddon, _find_inject_position, _build_js_payload, _generate_nonce, _modify_csp. This is a forward-reference to tests that task 2 has not yet written.",
+      "fix": "Clarify in task 8's Details section that 'FlowCleanup tests in test_proxy_addon.py' are expected to be added by task 2, not already present. The audit agent should not assume these tests exist when starting task 8."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 verification step 'grep -n \"addons.add|default_addons\" src/main.py' uses a shell pipe character inside a grep pattern without escaping. The | is a regex alternation and will work in grep -E or grep -P, but the task does not specify -E or -P flag. Standard grep treats | literally.",
+      "fix": "Update the grep command to use extended regex: grep -En 'addons\\.add|default_addons' src/main.py"
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 acceptance criteria include two resource criteria ('RAM <150MB at startup', 'CPU <5% over 5-minute window') that the task's own Implementation hints correctly mark as 'requires user verification'. These are listed as formal checkboxes in the acceptance criteria but cannot be verified by the QA agent. This is noted in the hints but not in the criteria themselves.",
+      "fix": "Mark the RAM and CPU acceptance criteria checkboxes with '(manual)' suffix so the QA agent does not attempt automated verification for them, matching what the hints already describe."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 11
+  }
+}

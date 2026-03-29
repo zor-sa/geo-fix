@@ -1,0 +1,76 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "iteration": 1,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "feasibility",
+      "task": 1,
+      "issue": "Task describes the code snippet at lines 242-273 as the current shape of _start_mitmproxy(), but the actual function at line 242 only does `master.addons.add(addon)` (single addon, GeoFixAddon). The described 'current' shape in the Details section shows `master.run()` being called directly inside run_proxy(), which matches reality. However the task says 'Replace master.addons.add(addon) with a single master.addons.add() call that adds all addons in order', implying the existing call is just `master.addons.add(addon)`. This is accurate — but the task does NOT mention that FlowCleanup() (from Task 2) must also be added here. Task 1's acceptance criteria says 'GeoFixAddon is added last', but Task 2 adds FlowCleanup after GeoFixAddon in the same function. These tasks are in the same Wave 1 and both modify _start_mitmproxy() without declaring a dependency on each other — if executed concurrently this creates a merge conflict and a sequencing ambiguity.",
+      "fix": "Either: (a) declare Task 2 as depending on Task 1 in depends_on (wave order already prevents parallel execution but the merge issue remains), or (b) clarify in Task 1's acceptance criteria that FlowCleanup will be added by Task 2 so GeoFixAddon need not be literally last after Task 1. Coordinate the exact lines each task writes to _start_mitmproxy()."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 3,
+      "issue": "Task 3 step 4 calls `uninstall_ca_cert(old_thumbprint)` — but the actual function signature in system_config.py is `uninstall_ca_cert(thumbprint: Optional[str] = None)`. The argument is a keyword parameter named `thumbprint`, not a positional parameter named `old_thumbprint`. The call must be `uninstall_ca_cert(thumbprint=old_thumbprint)` or positionally `uninstall_ca_cert(old_thumbprint)` (positional would work but is misleading). Additionally, tech-spec describes the certutil call as `certutil -delstore old thumbprint` — the actual implementation uses `certutil -delstore -user Root <identifier>`, not the command shown in the architecture diagram.",
+      "fix": "Update task prose to use the correct call `uninstall_ca_cert(thumbprint=old_thumbprint)`. Align the certutil command description in the task with actual implementation (`certutil -delstore -user Root <thumbprint>`)."
+    },
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 3,
+      "issue": "_start_mitmproxy() currently returns only `threading.Thread`. Task 3 requires it to return `(thread, master)` so _restart_mitmproxy() can call master.shutdown(). Task 3 declares depends_on [1, 2], so Task 1 is responsible for the _start_mitmproxy() signature. But Task 1's acceptance criteria and What to do section make NO mention of changing the return type — they only describe the DumpMaster -> Master swap. This means when Task 3 is executed it will find _start_mitmproxy() still returning a single Thread, breaking the restart logic. Task 1 must be updated to also change the return signature, or Task 3 must note this as a modification it makes (and update the call sites in main() itself).",
+      "fix": "Add to Task 1's acceptance criteria and What to do section: '_start_mitmproxy() must return (thread, master) tuple instead of just thread; update call site in main() from `proxy_thread = _start_mitmproxy(...)` to `proxy_thread, master = _start_mitmproxy(...)`'. Or assign this to Task 3 explicitly with a note that it modifies Task 1's output."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Task 2 step 2 instructs to add `from src.proxy_addon import FlowCleanup` import in main.py. But main.py already imports from src.proxy_addon with `from src.proxy_addon import GeoFixAddon` (line 56) at the top-level module scope. The task should instruct adding FlowCleanup to that same existing import line, not adding a duplicate import. Adding a second `from src.proxy_addon import ...` is valid Python but inconsistent with project conventions and would produce a linting warning.",
+      "fix": "Update step 2 to say 'add FlowCleanup to the existing import at the top of src/main.py: change `from src.proxy_addon import GeoFixAddon` to `from src.proxy_addon import GeoFixAddon, FlowCleanup`'."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "The _monitor_loop in main.py is defined as a nested function inside main() — it closes over local variables (stop_event, _watchdog_proc, session_id, stop_token, session_tmpdir). Task 3 instructs adding module-level variables `_last_restart_time: float = 0.0` and `_restart_timestamps: list[float] = []`. However the `master` reference (needed to call master.shutdown()) and the `addon` reference (for idle guard via addon._last_flow_time) are also local to main(). The task's suggestion to use module-level state for restart timestamps while the master/addon references live in the closure creates an inconsistent scoping pattern. _restart_mitmproxy() as a standalone function cannot access the closure-local `master` or `addon` without them being passed as arguments or stored in module-level globals.",
+      "fix": "Clarify in the task that _restart_mitmproxy() must accept `master`, `addon`, `opts`, and `state` as parameters (or that these must be promoted to module-level globals). The current design hint says 'expose/return master from _start_mitmproxy' but does not address how _restart_mitmproxy() receives the current master reference when called from within _monitor_loop. Add explicit wording about parameter passing."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 3,
+      "issue": "The Implementation hints section contains a complete struct field listing for PROCESS_MEMORY_COUNTERS_EX: `cb, PageFaultCount, PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage, PrivateUsage — all SIZE_T (use ctypes.c_size_t)`. This is a prescriptive implementation detail (a full ctypes struct definition). It crosses the line from hint to implementation, prescribing the exact ctypes struct layout rather than pointing to an approach.",
+      "fix": "Replace with a high-level pointer: 'Define a ctypes Structure for PROCESS_MEMORY_COUNTERS_EX matching the Windows SDK layout. The PrivateUsage field (last field) holds the value to check. Reference: https://docs.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex'."
+    },
+    {
+      "severity": "major",
+      "category": "tdd",
+      "task": 1,
+      "issue": "TDD anchor tests are placed in `test/test_master_setup.py` — a new file that does not yet exist. This is fine to create. However, the test `test_master_class_not_dumpmaster` is described as 'monkeypatch _start_mitmproxy imports; verify Master is used, not DumpMaster'. Since the imports are inside the function body (not module-level), standard monkeypatching of the module attribute won't work — the developer must patch `mitmproxy.tools.dump.DumpMaster` or `mitmproxy.master.Master` at the call site. The task does not guide the developer on this subtlety, making the test difficult to write correctly.",
+      "fix": "Add guidance: 'Because imports are inside run_proxy(), use unittest.mock.patch(\"mitmproxy.tools.dump.DumpMaster\") to assert it is NOT called, and patch(\"mitmproxy.master.Master\") to assert it IS called. Alternatively, inspect the source code of _start_mitmproxy with inspect.getsource() to assert DumpMaster is absent.'"
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "The edge case note for websocket_end says 'check mitmproxy API for correct approach (del flow vs flow.kill() vs content clearing)'. This is vague and could lead an implementer to use flow.kill() which sends a TCP RST to the client — not appropriate here since the connection has already ended. The correct approach (clearing content and removing from internal tracking) is mentioned but not identified as the answer.",
+      "fix": "Clarify: 'In websocket_end(), setting flow.websocket.messages = [] and flow.request.content = b\"\" is sufficient. Do NOT call flow.kill() — the connection is already terminated at this point.'"
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 3,
+      "issue": "test_geo_fix_addon_preserves_preset_after_restart checks that addon.preset.code is unchanged after a simulated restart. But the property `preset` on GeoFixAddon (line 133 in proxy_addon.py) returns `self._preset`, not an object with a `.code` attribute directly — it returns a CountryPreset which does have a `code` field (confirmed in presets.py). This is valid, but the test description says 'verify addon.preset.code unchanged' — the implementer needs to know CountryPreset has a .code field. Minor documentation gap in the test anchor.",
+      "fix": "Add to test description: 'CountryPreset has a .code string field. Assert addon.preset.code == original_code after restart simulation.'"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 38,
+    "issues_found": 9
+  }
+}

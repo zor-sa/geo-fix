@@ -1,0 +1,144 @@
+{
+  "validator": "task-validator",
+  "batch": 1,
+  "iteration": 1,
+  "batch_tasks": [1, 2, 3, 4, 5],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 1,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths contain unfilled template placeholder `{round}` — e.g. `logs/working/task-1/code-reviewer-{round}.json`. This is a literal template token, not a real path.",
+      "fix": "Replace `{round}` with the initial round number: `logs/working/task-1/code-reviewer-1.json`, `logs/working/task-1/security-auditor-1.json`, `logs/working/task-1/test-reviewer-1.json`"
+    },
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 2,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths contain unfilled template placeholder `{round}` — e.g. `logs/working/task-2/code-reviewer-{round}.json`.",
+      "fix": "Replace `{round}` with `1`: `logs/working/task-2/code-reviewer-1.json`, etc."
+    },
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 3,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths contain unfilled template placeholder `{round}` — e.g. `logs/working/task-3/code-reviewer-{round}.json`.",
+      "fix": "Replace `{round}` with `1`: `logs/working/task-3/code-reviewer-1.json`, etc."
+    },
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 4,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths contain unfilled template placeholder `{round}` — e.g. `logs/working/task-4/code-reviewer-{round}.json`.",
+      "fix": "Replace `{round}` with `1`: `logs/working/task-4/code-reviewer-1.json`, etc."
+    },
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 5,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths contain unfilled template placeholder `{round}` — e.g. `logs/working/task-5/code-reviewer-{round}.json`.",
+      "fix": "Replace `{round}` with `1`: `logs/working/task-5/code-reviewer-1.json`, etc."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 1,
+      "section": "Context Files",
+      "issue": "`decisions.md` is absent from Context Files. Template marks it as mandatory-always. Other tasks (2, 3, 4, 5) include it.",
+      "fix": "Add `- [decisions.md](../decisions.md)` to the Context Files list."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 2,
+      "section": "Context Files",
+      "issue": "`src/proxy_addon.py` and `src/main.py` are listed as plain text, not as markdown links. Template requires all context file entries to be markdown links with both name and path.",
+      "fix": "Replace plain-text entries with: `- [src/proxy_addon.py](../../../src/proxy_addon.py)` and `- [src/main.py](../../../src/main.py)`"
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 3,
+      "section": "Context Files",
+      "issue": "`project.md` and `architecture.md` are absent from Context Files. Template marks both as mandatory-always (project context). Every other task in the batch includes them.",
+      "fix": "Add `- [architecture.md](~/.claude/skills/project-knowledge/references/architecture.md)` and `- [project.md](~/.claude/skills/project-knowledge/references/project.md)` to Context Files."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 1,
+      "section": "Frontmatter",
+      "issue": "`teammate_name` field is absent. Template includes it (even if empty). Tasks 2, 4, 5 have `teammate_name:` (empty value). Task 1 omits the field entirely.",
+      "fix": "Add `teammate_name:` line to frontmatter (empty value is fine)."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 1,
+      "section": "Required Skills",
+      "issue": "Required Skills entry is missing the SKILL.md markdown link. Template format is `/skill:code-writing` — [SKILL.md path](path). Task 1 only has `/skill:code-writing` with no link.",
+      "fix": "Change to: `- \\`/skill:code-writing\\` — [skills/code-writing/SKILL.md](~/.claude/skills/code-writing/SKILL.md)`"
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 3,
+      "section": "Frontmatter",
+      "issue": "`teammate_name` field is absent. Template includes it (even if empty). Tasks 2, 4, 5 have the field.",
+      "fix": "Add `teammate_name:` line to frontmatter."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 4,
+      "section": "TDD Anchor",
+      "issue": "Two of three TDD Anchor tests (`test_mixed_case_head`, `test_uppercase_doctype`) guard behavior by verifying a return value (inject position), which is correct, but the description does not clarify what position/value is expected — the description is vague ('returns correct position'). Anchor should state what the expected outcome is.",
+      "fix": "Extend descriptions to include the expected return value, e.g.: `test_mixed_case_head` — `<Head>` in HTML returns inject position > 0 (inside the tag), same as lowercase `<head>`"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 5,
+      "section": "Verification Steps",
+      "issue": "Smoke section duplicates the Automated section: both list `python -m pytest test/ -x -v`. The Smoke section is meant for executable non-test-suite checks (curl, python -c, docker build, local server). A full test suite run is not a smoke check.",
+      "fix": "Replace the Smoke section content with a quick sanity command, e.g. `python -c \"from src.proxy_addon import FlowCleanup; print('FlowCleanup import OK')\"` → exit code 0. Or remove the Smoke subsection if no distinct smoke check exists (and remove `smoke` from frontmatter `verify`)."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 5,
+      "section": "Required Skills",
+      "issue": "Required Skills section is in Russian ('Перед выполнением задачи загрузи:') while all other tasks in the batch use English for this section. Post-completion is also in Russian (original template language). Inconsistent with the feature's task style.",
+      "fix": "Change to English: 'Before executing this task, load:'. Update Post-completion items to English as in tasks 1-4."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 5,
+      "section": "TDD Anchor",
+      "issue": "`test_no_flows_retained_after_100_requests` verifies `flow count == 0` which is a structural/count assertion. Tech-spec Testing Strategy integration test specifies 'process 100 flows, verify no flow objects retained (assert flow count == 0)' — the test matches, but the TDD Anchor description only says 'flow count is 0' without mentioning that this tests memory management (no unbounded retention). Weak description obscures the purpose.",
+      "fix": "Add purpose to description: 'after 100 proxied requests, zero flow objects are held in master state — confirms FlowCleanup + minimal Master prevents unbounded flow retention'"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "critical_findings": 8,
+    "major_findings": 0,
+    "minor_findings": 5,
+    "issues_found": 13
+  },
+  "decomposition_checks": {
+    "dependency_cycles": "none — graph is acyclic: 1←[], 2←[], 3←[1,2], 4←[1,2], 5←[3,4]",
+    "wave_ordering": "correct — tasks 1,2 in wave 1; tasks 3,4 in wave 2 (depend on wave 1); task 5 in wave 3 (depends on wave 2)",
+    "merge_candidates": "none — each task has a distinct responsibility and modifies distinct files",
+    "split_candidates": "none — task 3 touches 2 files (main.py + proxy_addon.py) for a single cohesive feature (RAM monitoring with idle guard requiring _last_flow_time in addon); within acceptable scope",
+    "traceability": "tasks 1-5 map 1:1 to tech-spec Implementation Tasks 1-5; file lists match",
+    "shared_resources": "mitmproxy Master owned by Task 1 (_start_mitmproxy); Task 3 (RAM restart) and Task 5 (integration tests) consume it; both have depends_on on Task 1 (directly or transitively via depends_on:[3,4] → 3 depends on [1,2]). Compliant."
+  }
+}

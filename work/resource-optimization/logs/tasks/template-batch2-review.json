@@ -1,0 +1,120 @@
+{
+  "validator": "task-validator",
+  "batch": 2,
+  "iteration": 1,
+  "tasks_reviewed": [6, 7, 8, 9],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "structure",
+      "task": 9,
+      "section": "Description / What to do / Acceptance Criteria / Details / Post-completion",
+      "issue": "Task body is written in Russian. According to project conventions (CLAUDE.md), tech docs should be in English. Tasks 6, 7, 8 are fully in English; Task 9 is the outlier. This creates inconsistency and may cause issues with English-language skills that parse task content.",
+      "fix": "Translate all prose sections to English. AC checklist items can reference Russian user-spec text as quoted strings, but the surrounding task text should be English."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 6,
+      "section": "Reviewers",
+      "issue": "The '## Reviewers' section is absent. The task template requires this section to be present for all tasks. For audit tasks with reviewers=[], the section should be present but empty or state 'None — self-verifying audit task'.",
+      "fix": "Add '## Reviewers' section with a note such as: 'None — self-verifying audit task. See logs/working/task-6/code-audit.md for output artifact.'"
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 7,
+      "section": "Reviewers",
+      "issue": "The '## Reviewers' section is absent. Same issue as Task 6.",
+      "fix": "Add '## Reviewers' section noting this is a self-verifying audit task with output at logs/working/task-7/security-auditor-1.json."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 8,
+      "section": "Reviewers",
+      "issue": "The '## Reviewers' section is absent. Same issue as Tasks 6 and 7.",
+      "fix": "Add '## Reviewers' section noting this is a self-verifying audit task with output at logs/working/task-8/test-audit.md."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 9,
+      "section": "Reviewers",
+      "issue": "The '## Reviewers' section is absent. Same issue as tasks 6, 7, 8.",
+      "fix": "Add '## Reviewers' section noting this is a self-verifying QA task with output at logs/working/task-9/qa-report.md."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 8,
+      "section": "Required Skills",
+      "issue": "Required Skills entry is missing the markdown link to the SKILL.md file. Text reads: '/skill:test-master' with no link. All other tasks in this batch include a proper link, e.g., '[skills/test-master/SKILL.md](~/.claude/skills/test-master/SKILL.md)'.",
+      "fix": "Change the entry to: '- `/skill:test-master` — [skills/test-master/SKILL.md](~/.claude/skills/test-master/SKILL.md)'"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 9,
+      "section": "Context Files",
+      "issue": "Context Files is missing 'architecture.md' and 'project.md', which are mandatory context files per the validation checklist. Tasks 6, 7, and 8 all include architecture.md and project.md; Task 9 omits both.",
+      "fix": "Add links: '[architecture.md](~/.claude/skills/project-knowledge/references/architecture.md)' and '[project.md](~/.claude/skills/project-knowledge/references/project.md)' to the Context Files section."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 7,
+      "section": "Post-completion",
+      "issue": "Post-completion checklist has only 2 items (decisions.md entry + deviations). The template requires a third item: 'Update user-spec/tech-spec if anything changed'. Task 6 also omits this item; Task 8 omits it too.",
+      "fix": "Add third checklist item: '- [ ] Update user-spec/tech-spec if anything changed as a result of audit findings.'"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 6,
+      "section": "Post-completion",
+      "issue": "Post-completion checklist has only 2 items, missing the spec-update item. Same as Task 7.",
+      "fix": "Add: '- [ ] Update user-spec/tech-spec if anything changed as a result of audit findings.'"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 8,
+      "section": "Post-completion",
+      "issue": "Post-completion checklist has only 2 items, missing the spec-update item. Same as Tasks 6 and 7.",
+      "fix": "Add: '- [ ] Update user-spec/tech-spec if anything changed as a result of audit findings.'"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 8,
+      "section": "Context Files",
+      "issue": "architecture.md link uses a relative path '../../.claude/skills/project-knowledge/references/architecture.md' while Tasks 6, 7, and 9 use the tilde path '~/.claude/skills/project-knowledge/references/architecture.md'. Inconsistent path style across the batch.",
+      "fix": "Change to: '[architecture.md](~/.claude/skills/project-knowledge/references/architecture.md)' and '[project.md](~/.claude/skills/project-knowledge/references/project.md)'"
+    }
+  ],
+  "carry_forward_check": {
+    "tech_spec_ac_in_task9": "All 12 tech-spec Acceptance Criteria items are present verbatim in Task 9 AC section. No carry-forward losses detected.",
+    "tech_spec_ac_in_audit_tasks": "Tasks 6, 7, 8 are audit tasks — their ACs cover reviewing the implementation rather than implementing it. No carry-forward requirement applies to audit task ACs.",
+    "tdd_anchor_carry_forward": "Tasks 6, 7, 8, 9 are non-code tasks (audit and QA). TDD Anchor carry-forward does not apply. All four tasks correctly omit the TDD Anchor section."
+  },
+  "dependency_check": {
+    "graph": "Tasks 6, 7, 8 depend on [5] (wave 4). Task 9 depends on [6, 7, 8] (wave 5). All wave assignments are consistent with dependency ordering.",
+    "cycles": "None detected.",
+    "wave_consistency": "Task 5 is wave 3 (inferred). Tasks 6, 7, 8 are wave 4 (> wave 3). Task 9 is wave 5 (> wave 4). Correct."
+  },
+  "skills_reviewers_check": {
+    "task_6": "skills=[code-reviewing], reviewers=[] — matches tech-spec 'Reviewers: none'. Skill matches task type (code audit).",
+    "task_7": "skills=[security-auditor], reviewers=[] — matches tech-spec 'Reviewers: none'. Skill matches task type (security audit).",
+    "task_8": "skills=[test-master], reviewers=[] — matches tech-spec 'Reviewers: none'. Skill matches task type (test audit).",
+    "task_9": "skills=[pre-deploy-qa], reviewers=[] — matches tech-spec 'Reviewers: none'. Skill matches task type (QA)."
+  },
+  "stats": {
+    "tasks_checked": 4,
+    "issues_found": 10,
+    "critical": 0,
+    "major": 1,
+    "minor": 9
+  }
+}
