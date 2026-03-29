@@ -1,0 +1,63 @@
+{
+  "status": "changes_required",
+  "findings": [
+    {
+      "category": "overengineering",
+      "severity": "major",
+      "issue": "User-spec contains implementation details that belong in tech-spec: specific addon names (Core, ProxyServer, NextLayer, TlsConfig), mitmproxy internals (View, stream_large_bodies), RAM auto-restart mechanism design",
+      "why_matters": "User-spec defines WHAT and WHY, not HOW. The 'Technical Decisions' section specifies implementation approach (which mitmproxy addons to keep, flow cleanup as last addon in chain, stream_large_bodies option). These details constrain the tech-spec author and may lead to suboptimal solutions if the implementation space is pre-narrowed.",
+      "fix": "Move the 'Technical Decisions' section content to tech-spec. In user-spec, keep only the desired outcomes: 'flows should not accumulate in memory', 'large response bodies should not be fully buffered', 'unused proxy components should be disabled'. Remove specific mitmproxy addon names and internal API references."
+    },
+    {
+      "category": "underengineering",
+      "severity": "critical",
+      "issue": "No edge cases specified for any of the optimization changes",
+      "why_matters": "This is a size M refactoring that modifies the proxy pipeline (flow cleanup, WebSocket trimming, addon stripping, body streaming, RAM monitoring with auto-restart). Each of these changes has failure modes: What happens if flow cleanup runs before another addon reads the flow? What if stream_large_bodies breaks JS injection on large HTML pages? What if the RAM monitor triggers auto-restart during an active Google Meet session? What if the RAM threshold is hit repeatedly causing restart loops? Zero edge cases for a feature this size is a critical gap.",
+      "fix": "Add edge cases section covering at minimum: (1) flow cleanup ordering vs addon pipeline, (2) stream_large_bodies interaction with JS injection on large HTML responses, (3) RAM auto-restart behavior during active WebSocket connections (Meet, Docs), (4) restart loop prevention if RAM threshold is hit repeatedly, (5) behavior when mitmproxy internal addons depend on removed addons, (6) concurrent flow processing during cleanup."
+    },
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "RAM auto-restart as 'last resort' is underspecified and risky",
+      "why_matters": "The spec mentions 'auto-restart proxy when RAM threshold exceeded' with a ~5 second interruption as acceptable. But there is no specification of: what the threshold is, how RAM is measured (RSS? VMS? process tree?), what happens to in-flight requests during restart, how the browser handles proxy disappearing mid-request, whether system proxy settings survive the restart, or how to prevent restart loops.",
+      "fix": "Either remove the auto-restart requirement from user-spec (if the other optimizations are expected to be sufficient) or specify: RAM measurement method, threshold value, cooldown period between restarts, maximum restarts per time window, and what 'proxy restart' means for active connections."
+    },
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "Acceptance criteria RAM targets lack measurement methodology",
+      "why_matters": "Criteria state 'RAM at startup <= 150MB' and 'does not grow more than 20% after 8 hours'. But RAM can be measured as RSS, private working set, commit size, etc. On Windows with PyInstaller, these differ significantly. Without specifying which metric, the criteria are ambiguous and untestable by automation. The 5% CPU criterion similarly lacks specification (average over what window? which process? does it include watchdog subprocess?).",
+      "fix": "Specify measurement method: e.g., 'Private Working Set in Task Manager' or 'psutil.Process.memory_info().rss' for the main process only (excluding watchdog). For CPU, specify the averaging window and whether it covers the process tree or main process only."
+    },
+    {
+      "category": "feasibility",
+      "severity": "major",
+      "issue": "Baseline RAM target of 100-150MB may be infeasible given mitmproxy's inherent footprint",
+      "why_matters": "Code research shows mitmproxy import alone costs ~35MB, and Python runtime is ~15-20MB. With Pillow, pystray, and the remaining required mitmproxy addons, the baseline before any flows is likely 80-120MB. The target of 100-150MB leaves almost no headroom for actual proxy operation (TLS state, connection pools, flow processing buffers). The current 200-300MB baseline may include significant unavoidable mitmproxy overhead that cannot be reduced by addon stripping alone.",
+      "fix": "Run a baseline measurement with the proposed minimal addon set before committing to specific numbers. Consider adjusting targets to 'reduce baseline by 40-50%' rather than absolute numbers, or specify the target as aspirational with a fallback: 'target 150MB, acceptable up to 200MB'."
+    },
+    {
+      "category": "sizing",
+      "severity": "minor",
+      "issue": "Declared size M may underestimate actual complexity",
+      "why_matters": "The feature involves: (1) replacing DumpMaster addon loading with custom minimal set, (2) implementing flow cleanup addon, (3) implementing WebSocket message trimming, (4) configuring stream_large_bodies, (5) implementing RAM monitoring with auto-restart, (6) verifying all existing functionality still works across the modified pipeline. Items 1, 2, and 5 each touch core proxy initialization and lifecycle, which are the most sensitive parts of the application. This is closer to L than M.",
+      "fix": "Either re-evaluate as size L, or descope the RAM auto-restart feature (item 5) to a separate follow-up, which would make M more accurate."
+    },
+    {
+      "category": "better_alternative",
+      "severity": "minor",
+      "issue": "stream_large_bodies may conflict with JS injection and a simpler content-length check would suffice",
+      "why_matters": "mitmproxy's stream_large_bodies streams response bodies above a threshold, but GeoFixAddon.response() needs the full body to perform JS injection. For target domains, streaming would break injection. For non-target domains, geo-fix only rewrites headers (in request hook), so response bodies are already irrelevant. A simpler approach: just don't read response bodies for non-target domains (which the code already does — it only accesses flow.response.text for target domains).",
+      "fix": "Evaluate whether stream_large_bodies actually helps given the existing code pattern. If response bodies are only accessed for target domain HTML responses, the feature may provide no benefit while adding complexity. Document this analysis in the spec or remove stream_large_bodies from scope."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "No rollback plan if optimization breaks production usage",
+      "why_matters": "This refactoring modifies the core proxy pipeline. If a subtle issue emerges after hours of use (e.g., certain sites break due to removed addons), users need a way to revert. There is no mention of feature flags, configuration options, or how to quickly revert if issues are found.",
+      "fix": "Consider adding a --legacy-mode flag or environment variable that restores the original DumpMaster initialization with all addons, as a safety net during rollout."
+    }
+  ],
+  "worst_category": "underengineering",
+  "summary": "The spec correctly identifies real memory issues and proposes reasonable optimization directions, but it has critical gaps in edge case coverage for a refactoring that touches the core proxy pipeline. Implementation details (specific mitmproxy addon names, internal APIs) should move to tech-spec. RAM targets need feasibility validation before commitment, and the auto-restart mechanism is underspecified for a feature that interrupts active user sessions."
+}
