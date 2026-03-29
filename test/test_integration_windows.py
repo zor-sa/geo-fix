@@ -130,6 +130,11 @@ class TestRegistryProxy:
 class TestCACertificate:
     """Test CA certificate install/uninstall."""
 
+    @pytest.mark.xfail(
+        reason="certutil -addstore -user Root shows confirmation dialog that "
+               "blocks on headless CI runners (no desktop session)",
+        strict=False,
+    )
     def test_install_and_uninstall(self):
         from src.system_config import MITMPROXY_CA_CERT
 

@@ -43,7 +43,7 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
       - name: Run integration tests
-        run: python -m pytest test/test_integration_windows.py test/test_integration_security.py -v --tb=short -x
+        run: python -m pytest test/test_integration_windows.py test/test_integration_security.py -v --tb=short
       - name: Run resource-optimization integration tests
         run: python -m pytest test/test_integration_proxy.py -v --tb=short -x
       - name: Run E2E security lifecycle tests
