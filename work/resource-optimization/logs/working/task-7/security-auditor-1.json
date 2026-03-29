@@ -1,0 +1,137 @@
+{
+  "task": 7,
+  "auditor": "security-auditor",
+  "round": 1,
+  "verdict": "FINDINGS",
+  "findings": [
+    {
+      "id": "SEC-1",
+      "severity": "medium",
+      "property": "CA key lifecycle",
+      "description": "In _restart_mitmproxy(), the sequence is: shutdown old master → uninstall old CA → start new master (generates new CA) → install new CA → delete key files → update state. However, between steps 3 and 5, the new CA private key exists on disk for the duration of _start_mitmproxy() (up to 15 seconds waiting for proxy to start). This is consistent with the initial startup sequence (main.py:527-531) where delete_ca_key_files is called after _start_mitmproxy returns, so the security posture is unchanged from baseline. The key exposure window during restart is identical to initial startup. No regression, but documenting for awareness.",
+      "location": "src/main.py:419-446",
+      "recommendation": "INFO: No action needed. The key-on-disk window during restart matches the initial startup window. Both are bounded by mitmproxy startup time (~5-15 seconds)."
+    },
+    {
+      "id": "SEC-2",
+      "severity": "low",
+      "property": "CA key lifecycle",
+      "description": "On restart failure path (install_ca_cert returns None at line 432), delete_ca_key_files and delete_ca_public_cert are correctly called before returning None, and the new master is shut down. This is correct — no key leakage on failure. However, on _start_mitmproxy failure (lines 423-425), the old CA has already been uninstalled (line 414) but new CA was never generated. The system is left without any trusted CA. The proxy is down, so no HTTPS interception occurs — this is safe but leaves the system in a degraded state requiring manual intervention or next restart cycle.",
+      "location": "src/main.py:423-425",
+      "recommendation": "INFO: Acceptable behavior. Failed restart activates cooldown (line 651-653), preventing restart loops. The degraded state (no proxy, no CA) is fail-safe — no traffic is intercepted without a trusted CA."
+    },
+    {
+      "id": "SEC-3",
+      "severity": "info",
+      "property": "DPAPI",
+      "description": "DPAPI state encryption is correctly implemented: save_state() at system_config.py:153-159 encrypts via _dpapi_encrypt (CryptProtectData with entropy), load_state() decrypts via _dpapi_decrypt. State is saved atomically (write to .tmp then rename). After restart, state.ca_thumbprint is updated (line 449) and save_state is called (line 450) before any further operations. On non-Windows (Linux dev/test), DPAPI passes through plaintext with a warning — acceptable for development, documented behavior.",
+      "location": "src/system_config.py:92-159, src/main.py:449-450",
+      "recommendation": "OK: DPAPI state encryption preserved correctly across restart path."
+    },
+    {
+      "id": "SEC-4",
+      "severity": "info",
+      "property": "CSP nonce",
+      "description": "CSP nonce injection is correctly implemented with the minimal Master. _generate_nonce() uses secrets.token_urlsafe(16) producing 128 bits of entropy — per OWASP CSP nonce guidelines this is sufficient. Nonce is generated per-response (line 191), never cached. _modify_csp() correctly handles: (a) existing script-src — appends nonce, (b) no script-src but default-src — promotes to script-src with unsafe tokens filtered out, (c) no CSP directives — creates minimal nonce-only policy. The unsafe-inline/unsafe-eval/unsafe-hashes filtering during default-src promotion (lines 108-113) is a security-positive decision. Only enforcing CSP header is modified, not report-only (line 202) — correct behavior.",
+      "location": "src/proxy_addon.py:75-122, 190-204",
+      "recommendation": "OK: CSP nonce implementation is sound. No DumpMaster-specific dependencies were involved in CSP processing."
+    },
+    {
+      "id": "SEC-5",
+      "severity": "info",
+      "property": "direct-connection",
+      "description": "During restart, system proxy remains set to 127.0.0.1:PORT (proxy settings are only modified during initial startup at main.py:558-571 and never changed during restart). The proxy is not listening for ~7 seconds during restart. Browsers (Chrome, Edge, Firefox) will receive ERR_PROXY_CONNECTION_REFUSED and will NOT fall back to direct connections when a system proxy is explicitly configured. This is correct behavior per browser proxy handling specifications. The tech-spec correctly flags this for integration test verification (Decision 4).",
+      "location": "src/main.py:392-453",
+      "recommendation": "OK: No direct-connection fallback during restart. System proxy setting preserved throughout restart sequence."
+    },
+    {
+      "id": "SEC-6",
+      "severity": "low",
+      "property": "FlowCleanup",
+      "description": "FlowCleanup correctly clears flow content after processing: response bodies set to b'' (not None), request bodies set to b''. WebSocket messages trimmed to last 1. Content is never written to disk or logs. However, FlowCleanup sets content to b'' (empty bytes) rather than None. While b'' is still a valid reduction (releases the original large buffer), setting to None would be marginally more memory-efficient as Python wouldn't allocate even the empty bytes object. This is a micro-optimization and not a security issue — the sensitive data is cleared in both cases.",
+      "location": "src/proxy_addon.py:215-219",
+      "recommendation": "INFO: No security issue. Content is cleared after processing. Using b'' vs None is a memory optimization choice, not a security concern."
+    },
+    {
+      "id": "SEC-7",
+      "severity": "info",
+      "property": "RAM monitor",
+      "description": "RAM monitor uses read-only GetProcessMemoryInfo via ctypes (main.py:253-284). The API call uses GetCurrentProcess() handle (pseudo-handle, no privilege escalation) and reads PrivateUsage — no write or execute operations. On Linux, reads /proc/self/status (read-only, process-local). No shell commands, no subprocess calls, no eval/exec in the memory reading path. Restart mechanism calls master.shutdown() and _start_mitmproxy() — both are internal Python operations, no injection vectors. The confdir path (session_tmpdir) is generated by tempfile.mkdtemp (system_config.py:347), not from user input — no path injection risk.",
+      "location": "src/main.py:253-309",
+      "recommendation": "OK: No new attack surface from RAM monitor. Read-only memory queries, no code execution paths."
+    },
+    {
+      "id": "SEC-8",
+      "severity": "info",
+      "property": "RAM monitor",
+      "description": "Rate limiting is correctly implemented: max 3 restarts per hour (line 337), 10-minute cooldown between restarts (line 333). On failed restart, cooldown is still activated (line 651-652), preventing restart-loop amplification. An attacker who can induce memory spikes cannot force more than 3 restarts per hour. After rate limit is hit, the monitor logs but does not restart (line 633-634). Timestamps are pruned to the rate-limit window to prevent unbounded list growth (line 639).",
+      "location": "src/main.py:312-340, 639-653",
+      "recommendation": "OK: Rate limiting and cooldown correctly prevent restart-loop amplification attacks."
+    },
+    {
+      "id": "SEC-9",
+      "severity": "info",
+      "property": "other",
+      "description": "Idle guard correctly implemented: GeoFixAddon._last_flow_time updated on every request (line 149, using time.monotonic() which is immune to system clock changes). _should_restart checks idle_seconds >= 10 (line 328-329). The lock (self._lock) protects _last_flow_time writes in request(), and the read in _monitor_loop accesses addon._last_flow_time directly — this is safe because float assignment is atomic in CPython (GIL-protected), and monotonic() values are monotonically increasing so a stale read is still safe (worst case: slightly longer idle period measured).",
+      "location": "src/proxy_addon.py:149, src/main.py:628-629",
+      "recommendation": "OK: Idle guard enforced before restart. Thread safety adequate for the use case."
+    },
+    {
+      "id": "SEC-10",
+      "severity": "info",
+      "property": "other",
+      "description": "GeoFixAddon instance is correctly reused across restarts. In _restart_mitmproxy, the same addon object is passed to _start_mitmproxy (line 422), which adds it to the new Master's addon chain (line 367). The addon contains: _preset (frozen dataclass), _js_payload (string), _lock (threading.Lock), _last_flow_time (float). No credential material, no CA keys, no sensitive state in the addon. The Lock object is reused — this is safe because the old master is fully shut down before the new one starts.",
+      "location": "src/main.py:420-422, src/proxy_addon.py:125-132",
+      "recommendation": "OK: GeoFixAddon reuse is safe — no credential material in addon state."
+    },
+    {
+      "id": "SEC-11",
+      "severity": "info",
+      "property": "other",
+      "description": "Logging in RAM monitor paths: only memory size in MB (line 637) and restart count (line 634) are logged. No flow content, headers, URLs, or user data in any RAM monitor log statement. The debug-level nonce logging in proxy_addon.py:206 only logs the first 8 chars of the nonce (truncated) — this is safe as the nonce is single-use and already embedded in the response HTML.",
+      "location": "src/main.py:633-655, src/proxy_addon.py:206",
+      "recommendation": "OK: No sensitive data in new logging paths."
+    },
+    {
+      "id": "SEC-12",
+      "severity": "info",
+      "property": "CSP nonce",
+      "description": "Nonce entropy verification: secrets.token_urlsafe(16) produces 16 random bytes encoded in base64url = 128 bits of entropy. OWASP recommends at least 128 bits for CSP nonces. Generated per-response (line 191), never cached or reused across responses. The nonce value is embedded in both the script tag (line 195) and the CSP header (line 204), ensuring they match.",
+      "location": "src/proxy_addon.py:75-77, 191",
+      "recommendation": "OK: Nonce entropy is adequate at 128 bits, generated fresh per response."
+    },
+    {
+      "id": "SEC-13",
+      "severity": "low",
+      "property": "other",
+      "description": "is_target_domain() at presets.py:78-81 uses str.endswith(tuple) for suffix matching and frozenset lookup for bare domains. The endswith check on '.google.com' would match 'evilgoogle.com' — but this is prevented because all TARGET_DOMAINS entries start with a dot (e.g., '.google.com'). endswith('.google.com') correctly requires the dot prefix, so 'evilgoogle.com'.endswith('.google.com') is False. However, 'www.google.com'.endswith('.google.com') is True — correct. The bare domain check (frozenset) handles the exact match case 'google.com'. This logic is sound.",
+      "location": "src/presets.py:64-81",
+      "recommendation": "OK: Domain matching is correct. The leading dot in TARGET_DOMAINS prevents subdomain confusion attacks."
+    },
+    {
+      "id": "SEC-14",
+      "severity": "medium",
+      "property": "CSP nonce",
+      "description": "If the response already has 'unsafe-inline' in script-src, adding a nonce does NOT cause 'unsafe-inline' to be ignored in browsers that support CSP level 2+. Per the CSP specification: if a nonce is present in script-src, 'unsafe-inline' IS ignored by CSP2+ browsers. This means our nonce addition effectively disables any pre-existing 'unsafe-inline' policy on the site. This is security-positive (stricter policy) but could break site functionality if the site relies on inline scripts without our nonce. This is an inherent trade-off of CSP nonce injection and is acceptable for the geo-fix use case (only target Google domains which use strict CSP).",
+      "location": "src/proxy_addon.py:98-101",
+      "recommendation": "INFO: Documenting for awareness. On CSP2+ browsers, adding a nonce to script-src with 'unsafe-inline' effectively removes 'unsafe-inline'. This is acceptable — Google domains use strict CSP and our injected script has the nonce."
+    },
+    {
+      "id": "SEC-15",
+      "severity": "medium",
+      "property": "CA key lifecycle",
+      "description": "In _restart_mitmproxy, the old CA is uninstalled (step 2, line 411-417) BEFORE the new master starts (step 3, line 422). If the new master fails to start, the system has no CA cert installed. Meanwhile the old master is already shut down. This creates a brief window where: (a) proxy is down, (b) no CA is installed. This is fail-safe (no HTTPS interception possible without both proxy and CA), but if another restart attempt succeeds later, the old orphaned CA key files from the failed attempt could theoretically remain in confdir. However, since confdir is reused (same session_tmpdir), the new Master would overwrite the CA files, so no orphan issue. Confirmed safe.",
+      "location": "src/main.py:411-425",
+      "recommendation": "OK: The ordering (uninstall old CA before starting new master) is safe. Failed restart = no proxy + no CA = fail-safe state."
+    },
+    {
+      "id": "SEC-16",
+      "severity": "low",
+      "property": "other",
+      "description": "The session_tmpdir ACL (system_config.py:348-358) restricts to current user on Windows via icacls. On restart, the same session_tmpdir is reused — ACL is already set from initial creation. New CA files written by mitmproxy into the same directory inherit the parent directory's ACL. No re-ACL needed on restart. On Linux (dev/test), chmod 0o700 is used — adequate for development.",
+      "location": "src/system_config.py:346-363",
+      "recommendation": "OK: Session tmpdir ACL preserved across restarts."
+    }
+  ],
+  "summary": "Full-feature security audit of the resource-optimization feature. All 10 acceptance criteria verified. No critical or high-severity findings. 3 medium-severity findings (all informational/awareness — no code changes required): (1) CA key exists on disk during restart startup window (~5-15 sec), consistent with initial startup behavior; (2) CSP nonce addition effectively disables pre-existing 'unsafe-inline' on CSP2+ browsers — acceptable trade-off for Google domains; (3) CA uninstall before new master start creates brief fail-safe state on restart failure. 4 low-severity findings: all informational edge cases with no action needed. 9 info findings confirming correct implementation. Overall verdict: security properties from the original implementation are preserved through the resource-optimization changes. The proxy restart mechanism introduces no new attack surface. CA key lifecycle, DPAPI encryption, CSP nonce injection, FlowCleanup, and rate limiting are all correctly implemented."
+}
