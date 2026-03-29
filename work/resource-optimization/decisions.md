@@ -32,3 +32,25 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - Manual check → OK
 
 -->
+
+## Task 2: Add FlowCleanup addon
+
+**Status:** Done
+**Commit:** 82d4920
+**Agent:** coder-cleanup
+**Summary:** Added stateless `FlowCleanup` addon to `src/proxy_addon.py` with `response`, `error`, `websocket_message`, and `websocket_end` hooks that clear flow content after processing to reduce GC pressure and prevent unbounded WebSocket message growth. Registration in `main.py` deferred to Task 3 per spec; ordering test added with `xfail` marker.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 1 major, 2 minor → [logs/working/task-2/code-reviewer-t2-round1.json]
+- security-auditor: approved (1 minor, Python limitation) → [logs/working/task-2/security-auditor-t2-round1.json]
+- test-reviewer: 1 major, 1 minor → [logs/working/task-2/test-reviewer-t2-round1.json]
+
+*Round 2 (after fixes):*
+- code-reviewer: approved → [logs/working/task-2/code-reviewer-t2-round2.json]
+- test-reviewer: passed → [logs/working/task-2/test-reviewer-t2-round2.json]
+
+**Verification:**
+- `pytest test/test_proxy_addon.py -v` → 34 passed, 1 xfailed
