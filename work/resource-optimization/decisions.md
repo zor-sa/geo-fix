@@ -199,3 +199,25 @@ Review details — in JSON files via links. QA report — in logs/working/.
 **Verification:**
 - `pytest test/ -x -v` → 244 passed, 13 skipped
 - QA report → [logs/working/task-9/qa-report.md]
+
+---
+
+### Fix: Accept-Language rewriting for all domains (QA blocker)
+
+**Date:** 2026-03-29
+**Commit:** 6b3c2e4
+**Author:** fixer agent
+
+**Problem:** `GeoFixAddon.request()` (introduced in task 3, commit ddfe7bf) gated Accept-Language header rewriting behind `is_target_domain()` check. Per user-spec, Accept-Language must be rewritten for ALL requests passing through the proxy — only JS injection and CSP nonce logic should be target-domain-only.
+
+**Root cause:** The `is_target_domain()` early return in `request()` was too broad — it skipped all request processing for non-target domains instead of only guarding domain-specific features.
+
+**Fix:** Removed `is_target_domain()` guard from `request()`. Accept-Language is now rewritten unconditionally. `response()` target-domain guard for JS injection/CSP nonce remains unchanged.
+
+**Tests:**
+- Fixed `test_request_skips_non_target_domain` → `test_request_rewrites_accept_language_non_target_domain` (corrected assertion)
+- Added `TestAcceptLanguageAllDomains`: 3 tests covering non-target, random, and target domains
+
+**Verification:**
+- `pytest test/ -x -v` → 41 passed in test_proxy_addon.py
+- Code review: approved (zero critical/major issues)
