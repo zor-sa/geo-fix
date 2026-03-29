@@ -1,0 +1,74 @@
+{
+  "validator": "task-validator",
+  "batch": 1,
+  "iteration": 2,
+  "tasks_reviewed": [1, 2, 3, 4, 5],
+  "status": "needs_fixes",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 2,
+      "section": "Frontmatter",
+      "issue": "Task 2 has `depends_on: [1]` and `wave: 1`, but Task 1 also has `wave: 1`. Validation rule: a task with `depends_on: [X]` must have `wave` strictly greater than the wave of task X. Wave 1 cannot depend on Wave 1 — both would be scheduled for parallel execution in the same wave, making the dependency meaningless and violating the wave ordering invariant.",
+      "fix": "Either (a) change Task 2 `wave` to `2` to reflect that it runs after Task 1, or (b) change `depends_on` back to `[]` if Task 2's main.py step is understood as a note rather than a hard dependency (the tech-spec classifies both as 'Wave 1 (independent)'). Option (b) is consistent with the tech-spec, since Task 2's FlowCleanup class in proxy_addon.py is truly independent; only the main.py wiring step requires Task 1, and that can be documented as an ordering note in Details rather than a formal dependency."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 4,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor descriptions for `test_mixed_case_head` and `test_uppercase_doctype` remain vague after the fix attempt: 'returns correct position (regression guard for the `.lower()` removal)' does not state what position/value is expected. The iteration 1 finding was not fully applied.",
+      "fix": "Extend each description with the expected return value: e.g. `test_mixed_case_head` — `<Head>` in HTML returns inject position > 0 pointing inside the tag, identical result to lowercase `<head>` (regression guard for the `.lower()` removal); `test_uppercase_doctype` — `<!DOCTYPE html>` returns inject position > 0 at end of doctype tag."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 5,
+      "section": "Verification Steps",
+      "issue": "Smoke section still contains a full pytest run (`python -m pytest test/test_integration_proxy.py -x -q`). The iteration 1 fix was not fully applied: the Smoke section is meant for lightweight sanity checks (python -c import, curl ping, docker build) — not a test suite invocation. The `verify: [smoke]` frontmatter field is still set. The difference between Automated and Smoke sections is now only the flags passed to pytest.",
+      "fix": "Replace the Smoke section content with a lightweight import/startup check, e.g.: `python -c \"from src.proxy_addon import FlowCleanup; print('FlowCleanup import OK')\"` → exit code 0 and 'FlowCleanup import OK' printed. Alternatively, remove the Smoke subsection entirely and change frontmatter `verify: [smoke]` to `verify: []`."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 5,
+      "section": "TDD Anchor",
+      "issue": "Tech-spec Testing Strategy integration tests include 'process 100 flows, verify no flow objects retained (assert flow count == 0)'. Task 5's TDD Anchor has `test_flow_content_cleared_after_processing` which tests a single flow's content is cleared — but does not test that zero flows are retained after 100 requests. The Details section explicitly redirects away from flow-count testing ('There is no valid master.state.flows API on mitmproxy.master.Master — do not assert on flow counts from the master object'), dropping this test entirely rather than adapting it.",
+      "fix": "Add a test anchor that covers the 'no unbounded retention' concern from the tech-spec, even if the assertion mechanism differs from the original: e.g. `test/test_integration_proxy.py::TestFlowCleanup::test_no_content_retained_after_multiple_flows` — after 10+ flows are processed through the proxy, inspect sampled flows to confirm request.content and response.content are cleared (not just the last one). The Details section should explain why flow-count assertion on master is not feasible and what substitute assertion is used."
+    }
+  ],
+  "iteration1_fixes_verified": {
+    "all_tasks_round_placeholder": "FIXED — all reviewer paths now use literal '1' (e.g. code-reviewer-1.json)",
+    "task1_decisions_md": "FIXED — decisions.md added to Context Files (line 66)",
+    "task1_skill_link": "FIXED — Required Skills now has [SKILL.md](~/.claude/skills/code-writing/SKILL.md) link",
+    "task1_teammate_name": "FIXED — teammate_name: field present in frontmatter (line 8)",
+    "task2_context_files_plain_text": "FIXED — src/proxy_addon.py and src/main.py now use markdown links",
+    "task2_depends_on": "CHANGED to [1] — but introduces new critical wave mismatch (see finding above)",
+    "task3_project_architecture_md": "FIXED — both project.md and architecture.md present in Context Files",
+    "task3_teammate_name": "FIXED — teammate_name: field present in frontmatter",
+    "task3_ca_function_signature": "FIXED — actual function signature documented with parameter name",
+    "task5_language_inconsistency": "FIXED — Required Skills and Post-completion now in English",
+    "task5_smoke_duplication": "PARTIALLY FIXED — Smoke command changed to shorter pytest run, but still a test suite invocation rather than a true smoke check"
+  },
+  "new_issues_introduced": [
+    "Task 2: wave/depends_on mismatch introduced by fixing depends_on to [1] — wave 1 cannot depend on wave 1 (critical)"
+  ],
+  "decomposition_checks": {
+    "dependency_cycles": "none — acyclic graph",
+    "wave_ordering": "Task 2 violates wave ordering: depends_on:[1] requires wave > 1, but wave is 1",
+    "merge_candidates": "none",
+    "split_candidates": "none",
+    "shared_resources": "compliant — Master owned by Task 1, consumers have transitive dependency on Task 1"
+  },
+  "stats": {
+    "tasks_checked": 5,
+    "critical_findings": 1,
+    "major_findings": 0,
+    "minor_findings": 3,
+    "issues_found": 4,
+    "iteration1_findings_fixed": 10,
+    "iteration1_findings_partially_fixed": 1,
+    "new_issues_introduced": 1
+  }
+}
