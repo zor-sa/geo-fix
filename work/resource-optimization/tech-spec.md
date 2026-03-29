@@ -1,6 +1,6 @@
 ---
 created: 2026-03-29
-status: draft
+status: approved
 branch: feature/resource-optimization
 size: L
 ---
