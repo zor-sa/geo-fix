@@ -3,7 +3,7 @@
 created: 2026-03-29
 
 # Status: draft | approved
-status: draft
+status: approved
 
 # Work type: feature | bug | refactoring
 type: refactoring
