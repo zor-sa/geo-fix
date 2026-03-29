@@ -239,18 +239,33 @@ def _do_cleanup():
             logger.error("Cleanup error: %s", e)
 
 
-def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None, port: int = PROXY_PORT) -> threading.Thread:
-    """Start mitmproxy in a background thread."""
+def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None, port: int = PROXY_PORT) -> tuple[threading.Thread, "Master"]:
+    """Start mitmproxy in a background thread.
+
+    Returns (thread, master) tuple so callers can access the master instance.
+    """
     from mitmproxy.options import Options
-    from mitmproxy.tools.dump import DumpMaster
+    from mitmproxy.master import Master
+    from mitmproxy.addons.core import Core
+    from mitmproxy.addons.proxyserver import Proxyserver
+    from mitmproxy.addons.next_layer import NextLayer
+    from mitmproxy.addons.tlsconfig import TlsConfig
+    from mitmproxy.addons.keepserving import KeepServing
+    from mitmproxy.addons.errorcheck import ErrorCheck
+
+    master_ref = {}
 
     def run_proxy():
         kwargs = dict(listen_host=PROXY_HOST, listen_port=port)
         if confdir:
             kwargs["confdir"] = confdir
         opts = Options(**kwargs)
-        master = DumpMaster(opts)
-        master.addons.add(addon)
+        master = Master(opts)
+        master.addons.add(
+            Core(), Proxyserver(), NextLayer(), TlsConfig(),
+            KeepServing(), ErrorCheck(), addon
+        )
+        master_ref["master"] = master
 
         logger.info("Starting mitmproxy on %s:%d", PROXY_HOST, port)
 
@@ -267,7 +282,7 @@ def _start_mitmproxy(addon: GeoFixAddon, confdir: str = None, port: int = PROXY_
         time.sleep(0.5)
         if check_proxy_running(PROXY_HOST, port):
             logger.info("mitmproxy is running on port %d", port)
-            return thread
+            return thread, master_ref.get("master")
 
     logger.error("mitmproxy failed to start within 15 seconds")
     sys.exit(1)
@@ -344,7 +359,7 @@ def main():
     addon = GeoFixAddon(preset)
 
     # Start mitmproxy FIRST — no system changes until proxy is confirmed running
-    proxy_thread = _start_mitmproxy(addon, confdir=session_tmpdir, port=port)
+    proxy_thread, proxy_master = _start_mitmproxy(addon, confdir=session_tmpdir, port=port)
 
     # Delete CA private key from disk — mitmproxy has loaded it into memory.
     # Key exists on disk only during mitmproxy startup (seconds, not hours).
