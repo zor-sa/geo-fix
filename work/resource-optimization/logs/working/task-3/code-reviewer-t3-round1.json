@@ -1,0 +1,69 @@
+{
+  "status": "changes_required",
+  "summary": "Implementation is mostly correct but has one critical correctness bug: _last_flow_time is only updated for target domains, making the idle guard blind to non-target traffic — the proxy could restart while the user actively browses non-Google sites. Three major issues: naming inconsistency in memory helpers, no recovery path when restart fails, and weak cooldown tests that only verify arithmetic rather than actual code paths.",
+  "criticalIssues": [
+    {
+      "file": "src/proxy_addon.py",
+      "line": 149,
+      "severity": "critical",
+      "category": "architecture",
+      "issue": "_last_flow_time is set after the is_target_domain() early return, so it is only updated for Google-property requests. All other traffic through the proxy (the vast majority during normal browsing) is invisible to the idle guard.",
+      "impact": "The idle guard exists to prevent a proxy restart while the user is actively browsing. With this bug, browsing 30+ non-Google tabs generates zero updates to _last_flow_time. After 10 idle seconds on target domains, the idle guard clears and the proxy can restart — even if the user is in the middle of a YouTube, GitHub, or Slack session. The ~7-second connectivity gap occurs at the worst possible moment.",
+      "recommendation": "Move self._last_flow_time = time.monotonic() to BEFORE the is_target_domain() guard. The request() hook is called for every flow; the timestamp must be recorded for all of them, not just target-domain ones:\n\n  def request(self, flow: http.HTTPFlow) -> None:\n      self._last_flow_time = time.monotonic()   # track ALL traffic\n      if not is_target_domain(flow.request.host):\n          return\n      ..."
+    }
+  ],
+  "suggestions": [
+    {
+      "file": "src/main.py",
+      "line": 287,
+      "severity": "major",
+      "category": "maintainability",
+      "suggestion": "_get_private_bytes_linux() returns MB, but its name (and sibling _get_private_bytes_windows()) implies bytes. The dispatcher in _get_process_memory_mb() happens to handle both correctly (divides Windows bytes, passes Linux MB through), but the naming is a trap: anyone reading the name would assume bytes and divide again, introducing a 1024x bug.",
+      "benefit": "Rename to _get_memory_mb_linux() (and optionally _get_memory_bytes_windows() + expose the division in the dispatcher consistently) so the unit is unambiguous from the name alone. The existing docstrings say 'Returns bytes' vs 'Returns MB' but names override docstrings in practice.",
+      "optional": false
+    },
+    {
+      "file": "src/main.py",
+      "line": 619,
+      "severity": "major",
+      "category": "error-handling",
+      "suggestion": "When _restart_mitmproxy() returns (None, None), proxy_ref is not updated — it still holds the reference to the old, now-shutdown master. On the next 60-second cycle, if memory is still above threshold, _restart_mitmproxy() will be called again with the dead master as old_master. The shutdown() call on it is wrapped in try/except so it silently proceeds, but the proxy remains dead with no auto-recovery path and no indication to the user.",
+      "benefit": "After a failed restart, clear proxy_ref['master'] and log a prominent error telling the user to restart geo-fix manually. Alternatively, set _last_restart_time = time.monotonic() on failure so the cooldown prevents immediate re-triggering while the system is in a broken state. At minimum, document the failure mode.",
+      "optional": false
+    },
+    {
+      "file": "test/test_ram_monitor.py",
+      "line": 56,
+      "severity": "major",
+      "category": "testing",
+      "suggestion": "TestCooldown.test_cooldown_blocks_restart and test_cooldown_allows_restart_after_10min only assert that `now - (now - 300) < 600` and `now - (now - 660) >= 600` — pure arithmetic truisms that could pass even if the cooldown code were deleted entirely. They do not exercise any line of _monitor_loop.",
+      "benefit": "Rewrite as behavioral tests: mock _get_process_memory_mb to return 350.0, pre-set _last_restart_time, call the monitor logic directly (or invoke the loop with a patched sleep), and assert that _restart_mitmproxy was or was not called. This is the pattern already used well in TestIdleGuard — apply it to cooldown too.",
+      "optional": false
+    },
+    {
+      "file": "src/main.py",
+      "line": 362,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "In _restart_mitmproxy(), the call to _start_mitmproxy(addon, confdir, port) already re-adds the same GeoFixAddon instance and a new FlowCleanup() to the new master. The tech spec explicitly lists this as step 7 of the restart sequence. This is correct, but it is not obvious to the reader that _start_mitmproxy() is also responsible for addon re-registration on restart — a comment here would clarify the dual role.",
+      "benefit": "Reduces the chance of a future developer adding a redundant master.addons.add(addon) call after _restart_mitmproxy() or removing addon from _start_mitmproxy() without realising it breaks restarts.",
+      "optional": true
+    },
+    {
+      "file": "src/main.py",
+      "line": 584,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The `continue` at the start of the RAM check block (when mem_mb < threshold) works correctly today because nothing follows the try/except. However it exits the current iteration via continue rather than an if/else structure, which would be easier to reason about for anyone adding code after the RAM check in the future.",
+      "benefit": "Minimal: change `if mem_mb < threshold: continue` to wrap the remainder of the RAM logic in `else:`. Purely defensive against future edit-time confusion.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 5,
+    "criticalIssuesCount": 1,
+    "majorIssuesCount": 3,
+    "minorIssuesCount": 2,
+    "testCoverageAssessment": "adequate"
+  }
+}
