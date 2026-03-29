@@ -1,176 +1,274 @@
 ---
-created: YYYY-MM-DD
-status: draft | approved
-branch: dev | feature/{feature-name}
-size: S | M | L
+created: 2026-03-29
+status: draft
+branch: feature/resource-optimization
+size: L
 ---
 
-# Tech Spec: {Feature Name}
+# Tech Spec: Resource Optimization
 
 ## Solution
 
-Technical approach. (Длина зависит от задачи — без ограничений.)
+Reduce geo-fix RAM from ~200-300MB (growing unbounded) to a stable ~100-150MB, and average CPU from 5-15% to under 5% during active browsing. Three main attack vectors:
+
+1. **Minimize mitmproxy addon chain** — replace DumpMaster (loads ~35 default addons) with base `Master` class plus only the 4-5 addons required for HTTPS proxying. This eliminates ~30 unused addons from the hook processing chain and removes the `View` store that retains all flows indefinitely.
+
+2. **Flow lifecycle management** — add a cleanup addon that removes completed flows from memory immediately after processing, and trims WebSocket message history to prevent unbounded growth during long sessions (Google Docs, Meet).
+
+3. **RAM watchdog with auto-restart** — monitor process memory (Private Working Set) and restart the mitmproxy proxy thread if it exceeds 300MB, with cooldown/rate-limiting to prevent restart loops.
+
+All existing functionality, security properties, and tests are preserved unchanged.
 
 ## Architecture
 
 ### What we're building/modifying
 
-- **Component A** — purpose
-- **Component B** — purpose
+- **`src/main.py` — mitmproxy initialization** — replace `DumpMaster` with minimal `Master` setup loading only essential addons (Core, Proxyserver, NextLayer, TlsConfig). Add `flow_detail=0` to suppress stdout logging.
+- **`src/proxy_addon.py` — flow cleanup addon** — new `FlowCleanup` addon that removes flows after response/error/websocket_end and trims WebSocket message history. Minor optimization of `_find_inject_position` to avoid full `.lower()` copy.
+- **`src/main.py` — RAM monitor** — extend existing monitor thread to check process memory via Windows `GetProcessMemoryInfo` API and trigger proxy restart when threshold exceeded.
 
 ### How it works
 
-Data flow, interactions, sequence.
+```
+Startup:
+  main.py → Master(opts) instead of DumpMaster(opts)
+         → master.addons.add(Core, Proxyserver, NextLayer, TlsConfig)
+         → master.addons.add(KeepServing, ErrorCheck)
+         → master.addons.add(GeoFixAddon)
+         → master.addons.add(FlowCleanup)  # LAST — runs after GeoFixAddon
+
+Request lifecycle (unchanged):
+  Browser → proxy → GeoFixAddon.request() → upstream
+  upstream → GeoFixAddon.response() → FlowCleanup.response() → Browser
+  FlowCleanup removes flow from any internal stores
+
+WebSocket lifecycle:
+  FlowCleanup.websocket_message() → trim message history to last 1 message
+  FlowCleanup.websocket_end() → remove flow
+
+RAM monitoring (in existing monitor thread):
+  Every 60 seconds: check process Private Working Set
+  If > 300MB and cooldown elapsed: restart mitmproxy thread
+  Restart: shutdown old master → create new master → re-add addons
+  Rate limit: max 3 restarts per hour, then log-only
+```
 
 ### Shared resources
 
-Heavy resources shared across components (ML models, DB connection pools, browser instances, API clients).
-If none — write "None".
-
 | Resource | Owner (creates) | Consumers | Instance count |
 |----------|----------------|-----------|----------------|
-| example: FastEmbedEmbedding | main.py | Indexer, QueryEngine | 1 (singleton) |
+| mitmproxy Master | main.py `_start_mitmproxy()` | GeoFixAddon, FlowCleanup | 1 (recreated on RAM restart) |
+| GeoFixAddon | main.py | mitmproxy Master | 1 (reused across restarts) |
 
 ## Decisions
 
-### Decision 1: [topic]
-**Decision:** what we chose
-**Rationale:** why
-**Alternatives considered:** what else, why rejected
+### Decision 1: Base Master instead of DumpMaster
 
-### Decision 2: ...
+**Decision:** Use `mitmproxy.master.Master` directly with manually added essential addons, instead of `DumpMaster` which loads 35 default addons.
+
+**Rationale:** DumpMaster loads ~30 addons that geo-fix never uses (ClientPlayback, ServerPlayback, Save, SaveHar, Cut, Export, Onboarding, CommandHistory, Comment, ScriptLoader, MapRemote, MapLocal, ModifyBody, ModifyHeaders, StickyAuth, StickyCookie, ProxyAuth, Browser, etc.). Each addon registers hooks checked on every flow event. The `View` addon stores all flows indefinitely — the primary cause of memory growth.
+
+**Alternatives considered:**
+- DumpMaster with `with_dumper=False` + post-init addon removal: Still loads all addons initially; View store briefly exists; fragile. Rejected as half-measure.
+- Switch to proxy.py library: Much lighter (~5-20MB) but immature plugin API, would require rewriting all addon logic. Rejected as too risky.
+
+### Decision 2: FlowCleanup as separate addon
+
+**Decision:** Create a dedicated `FlowCleanup` addon added AFTER `GeoFixAddon` in the addon chain.
+
+**Rationale:** Separation of concerns — GeoFixAddon handles spoofing, FlowCleanup handles memory management. Added last to ensure GeoFixAddon processes flows first. Easier to test independently.
+
+**Alternatives considered:** Merging cleanup into GeoFixAddon's handlers. Rejected — mixes concerns, harder to test.
+
+### Decision 3: RAM monitor in existing monitor thread
+
+**Decision:** Extend the existing VPN/watchdog monitor thread (60-second loop) with RAM checking.
+
+**Rationale:** Avoids new thread. 60-second interval is sufficient since RAM growth is gradual.
+
+**Alternatives considered:** Separate thread with shorter interval. Rejected as unnecessary.
+
+### Decision 4: Proxy thread restart (not full process restart)
+
+**Decision:** On RAM threshold breach, restart only the mitmproxy thread, not the entire process.
+
+**Rationale:** Full restart would lose tray icon, watchdog connection, system proxy settings. Thread restart only interrupts proxy traffic for ~5 seconds.
+
+**Alternatives considered:** Full process restart via watchdog. Rejected as too disruptive.
+
+### Decision 5: Keep watchdog as subprocess
+
+**Decision:** Do not change watchdog subprocess architecture.
+
+**Rationale:** User prioritized reliability over 15MB savings. Watchdog must survive main process death — a thread cannot do this.
+
+**Alternatives considered:** Thread (saves 15-20MB, loses crash detection). Batch script (less reliable). Both rejected.
+
+### Decision 6: No psutil dependency for RAM monitoring
+
+**Decision:** Use Windows `ctypes` API (`GetProcessMemoryInfo`) directly instead of adding `psutil`.
+
+**Rationale:** Avoids new dependency. `PROCESS_MEMORY_COUNTERS.WorkingSetSize` is stable since Windows XP. Fallback to `/proc/self/status` on Linux for testing.
+
+**Alternatives considered:** `psutil` package — reliable cross-platform but adds ~10MB to bundle and new dependency. Rejected.
 
 ## Data Models
 
-DB schemas, interfaces, types. Skip if N/A.
+N/A — no new data models. `ProxyState` dataclass unchanged.
 
 ## Dependencies
 
 ### New packages
-- `package-name` — purpose
+
+None.
 
 ### Using existing (from project)
-- `module-name` — how
+
+- `mitmproxy.master.Master` — base master class (replacing `DumpMaster`)
+- `mitmproxy.addons.core.Core` — essential addon
+- `mitmproxy.proxy.server.Proxyserver` — proxy server addon
+- `mitmproxy.addons.next_layer.NextLayer` — protocol detection
+- `mitmproxy.addons.tlsconfig.TlsConfig` — TLS/certificate handling
+- `mitmproxy.addons.errorcheck.ErrorCheck` — startup error reporting
+- `mitmproxy.addons.keepserving.KeepServing` — prevents premature exit
 
 ## Testing Strategy
 
-**Feature size:** S / M / L
+**Feature size:** L
 
 ### Unit tests
-- Scenario 1: what we test
-- Scenario 2: ...
+
+- FlowCleanup addon: verify response/error/websocket_end hooks remove flows
+- FlowCleanup addon: verify websocket_message trims history to 1 message
+- RAM monitor: test threshold detection with mocked memory readings
+- RAM monitor: test cooldown/rate-limiting logic (no restart within 10 min, max 3/hour)
+- Minimal Master setup: verify required addons are loaded
+- Existing proxy_addon tests: must pass unchanged
 
 ### Integration tests
-- Scenario 1 (if M/L feature, or if needed)
-- "None" (if S feature and agreed with user)
+
+- Start optimized proxy, send HTTP request, verify response (proxy works without DumpMaster)
+- Start optimized proxy, send request to target domain, verify JS injection works
+- Start optimized proxy, process N flows, verify memory does not grow
+- Existing integration tests: must pass unchanged
 
 ### E2E tests
-- Critical flow 1 (if L feature)
-- "None" (if S/M and not needed)
+
+- Existing E2E tests (Playwright through proxy): must pass unchanged
+- No new E2E tests — functionality is unchanged
 
 ## Agent Verification Plan
 
 **Source:** user-spec "Как проверить" section.
 
 ### Verification approach
-How agent verifies beyond automated tests.
-Per-task smoke checks are specified in each task's Verify-smoke / Verify-user fields in Implementation Tasks.
-Post-deploy checks are described in the Post-deploy verification task description.
+
+1. Run full test suite (`pytest test/ -x`) — all existing tests pass
+2. Run new unit tests for FlowCleanup and RAM monitor
+3. Verify minimal addon set via grep in source code
+4. Verify flow cleanup via dedicated unit test
 
 ### Tools required
-Playwright MCP, Telegram MCP, curl, bash — which are needed.
+
+bash (pytest, grep)
 
 ## Risks
 
 | Risk | Mitigation |
 |------|-----------|
-| Risk 1 | What we do |
+| Minimal Master missing essential addon for edge-case traffic (HTTP/2, CONNECT, WebSocket) | Include NextLayer (protocol detection). Add integration test for CONNECT tunneling. |
+| Flow cleanup conflicts with mitmproxy internals | With minimal Master, no View addon is loaded — flows are not stored. FlowCleanup is a safety net. |
+| Proxy restart drops in-flight requests | Browser retries failed requests. 10-min cooldown ensures rarity. User accepted tradeoff. |
+| mitmproxy internal API changes break minimal Master | Pin mitmproxy version. Add startup assertion that proxy is listening. |
+| Windows memory API differences across versions | `PROCESS_MEMORY_COUNTERS.WorkingSetSize` is stable since XP. Fallback for non-Windows. |
 
 ## Acceptance Criteria
 
-Технические критерии приёмки (дополняют пользовательские из user-spec):
+Technical acceptance criteria (supplement user-spec criteria):
 
-- [ ] API возвращает корректные коды ответов (200, 201, 400, 404, 500)
-- [ ] Миграции БД применяются и откатываются без ошибок
-- [ ] Все тесты проходят (unit, integration если есть)
-- [ ] Нет регрессий в существующих тестах
-- [ ] ...
+- [ ] mitmproxy starts with base Master class, not DumpMaster — no View addon loaded
+- [ ] Only essential addons loaded: Core, Proxyserver, NextLayer, TlsConfig, KeepServing, ErrorCheck, GeoFixAddon, FlowCleanup
+- [ ] FlowCleanup.response() fires after GeoFixAddon.response() in addon chain
+- [ ] WebSocket message history trimmed to <=1 message per connection
+- [ ] RAM monitoring triggers at 300MB Private Working Set with 10-min cooldown
+- [ ] Proxy restart preserves GeoFixAddon state (current preset, JS payload cache)
+- [ ] No regressions in existing test suite (unit + integration + E2E)
+- [ ] `flow_detail=0` set in mitmproxy Options
 
 ## Implementation Tasks
 
-<!-- Tasks are brief scope descriptions. AC, TDD, and detailed steps are created during task-decomposition.
+### Wave 1 (independent)
 
-     Verify-smoke: concrete executable checks the agent runs during implementation — no deployment needed.
-     Types: command (curl, python -c, docker build), MCP tool (Playwright, Telegram),
-     API call (OpenRouter, external services), local server check, agent with test prompt.
-     Verify-user: agent asks user to verify something (UI, behavior, experience).
-     Both fields optional — omit if task is internal logic fully covered by tests. -->
+#### Task 1: Replace DumpMaster with minimal Master
 
-### Wave 1 (независимые)
-
-#### Task 1: [Name]
-- **Description:** Создать REST-эндпоинт для регистрации пользователей. Нужен для MVP авторизации. Результат: POST /api/users возвращает 201.
+- **Description:** Replace mitmproxy `DumpMaster` initialization in `_start_mitmproxy()` with base `Master` class plus only essential addons (Core, Proxyserver, NextLayer, TlsConfig, KeepServing, ErrorCheck). This removes ~30 unused addons and the View store that causes unbounded memory growth.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Verify-smoke:** `curl -X POST localhost:3000/api/users -d '{"name":"test","email":"test@test.com"}' -H 'Content-Type: application/json'` → 201
-- **Files to modify:** `src/api/users.ts`, `src/models/user.ts`
-- **Files to read:** `src/api/index.ts`, `src/middleware/auth.ts`
+- **Verify-smoke:** `python -c "from mitmproxy.master import Master; from mitmproxy.options import Options; print('Master import OK')"` → no error
+- **Files to modify:** `src/main.py`
+- **Files to read:** `src/proxy_addon.py`, `src/presets.py`
 
-#### Task 2: [Name]
-- **Description:** Добавить форму создания пользователя (name, email, role). Связывает UI с API из Task 1. Результат: заполненная форма отправляет POST /api/users.
+#### Task 2: Add FlowCleanup addon
+
+- **Description:** Create a `FlowCleanup` addon that removes completed flows from memory after processing and trims WebSocket message history to prevent unbounded growth. Added last in the chain so GeoFixAddon processes flows first.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
-- **Verify-user:** open localhost:3000/users → form renders, submit creates user
-- **Files to modify:** `src/components/UserForm.tsx`
-- **Files to read:** `src/components/BaseForm.tsx`, `src/hooks/useValidation.ts`
+- **Files to modify:** `src/proxy_addon.py`
+- **Files to read:** `src/main.py`
 
-### Wave 2 (зависит от Wave 1)
+### Wave 2 (depends on Wave 1)
 
-#### Task 3: [Name]
-- **Description:** Интегрировать отправку welcome-email при создании пользователя. Асинхронно, не блокирует основной flow. Результат: после POST /api/users уходит email.
+#### Task 3: Add RAM monitoring with proxy auto-restart
+
+- **Description:** Extend the existing monitor thread to check process Private Working Set every 60 seconds and restart the mitmproxy thread if it exceeds 300MB. Includes cooldown (10 min) and rate limiting (max 3/hour, then log-only).
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Files to modify:** `src/services/notification.ts`
-- **Files to read:** `src/api/users.ts`, `src/config/services.ts`
+- **Files to modify:** `src/main.py`
+- **Files to read:** `src/proxy_addon.py`, `src/system_config.py`
+
+#### Task 4: Minor CPU optimizations in proxy_addon
+
+- **Description:** Optimize `_find_inject_position()` to avoid full `.lower()` copy of HTML. Optimize `is_target_domain()` to use tuple-based `endswith()` for O(1) suffix matching instead of linear list scan.
+- **Skill:** code-writing
+- **Reviewers:** code-reviewer, test-reviewer
+- **Files to modify:** `src/proxy_addon.py`, `src/presets.py`
+- **Files to read:** `test/test_proxy_addon.py`, `test/test_presets.py`
+
+### Wave 3 (depends on Wave 2)
+
+#### Task 5: Integration testing of optimized proxy
+
+- **Description:** Add integration tests verifying the optimized proxy handles HTTP/HTTPS/WebSocket traffic correctly, JS injection works through minimal Master, and flow cleanup prevents memory growth.
+- **Skill:** code-writing
+- **Reviewers:** code-reviewer, test-reviewer
+- **Verify-smoke:** `python -m pytest test/ -x -v` → all tests pass
+- **Files to modify:** `test/test_integration_proxy.py` (new)
+- **Files to read:** `src/main.py`, `src/proxy_addon.py`, `test/test_proxy_addon.py`, `test/test_integration_windows.py`
 
 ### Audit Wave
 
-<!-- Full-feature audit: 3 auditors review all code in parallel. Always present. -->
-<!-- Auditors read code and write reports. If issues found — lead spawns a fixer, auditors become reviewers. -->
+#### Task 6: Code Audit
 
-#### Task N-2: Code Audit
-- **Description:** Full-feature code quality audit. Read all source files created/modified in this feature (from decisions.md + tech-spec "Files to modify"). Review holistically for cross-component issues: duplicate resource initialization, shared resources compliance with Architecture decisions, architectural consistency. Write audit report.
+- **Description:** Full-feature code quality audit. Read all source files modified in this feature (src/main.py, src/proxy_addon.py, src/presets.py). Review for cross-component issues: proxy initialization correctness, addon ordering, restart safety, memory monitoring edge cases. Write audit report.
 - **Skill:** code-reviewing
 - **Reviewers:** none
 
-#### Task N-1: Security Audit
-- **Description:** Full-feature security audit. Read all source files created/modified in this feature. Analyze for OWASP Top 10 across all components, cross-component auth/data flow. Write audit report.
+#### Task 7: Security Audit
+
+- **Description:** Full-feature security audit. Read all modified source files. Verify security properties preserved: CA key lifecycle, DPAPI state encryption, CSP nonce injection with minimal Master, no new attack surface from proxy restart. Write audit report.
 - **Skill:** security-auditor
 - **Reviewers:** none
 
-#### Task N: Test Audit
-- **Description:** Full-feature test quality audit. Read all test files created in this feature. Verify coverage, meaningful assertions, test pyramid balance across all components. Write audit report.
+#### Task 8: Test Audit
+
+- **Description:** Full-feature test quality audit. Read all test files (existing + new). Verify coverage of FlowCleanup, RAM monitor, minimal Master. Check existing tests still cover all original functionality. Write audit report.
 - **Skill:** test-master
 - **Reviewers:** none
 
 ### Final Wave
 
-<!-- QA is always present. Deploy and Post-deploy — only if applicable for this feature. -->
+#### Task 9: Pre-deploy QA
 
-#### Task N: Pre-deploy QA
-- **Description:** Acceptance testing: run all tests, verify acceptance criteria from user-spec and tech-spec
+- **Description:** Acceptance testing: run all tests (unit + integration + E2E), verify acceptance criteria from user-spec and tech-spec. Confirm no regressions.
 - **Skill:** pre-deploy-qa
-- **Reviewers:** none
-
-#### Task N+1: Deploy (if applicable)
-- **Description:** Deploy + verify logs
-- **Skill:** infrastructure
-- **Reviewers:** none
-
-#### Task N+2: Post-deploy verification (if applicable)
-- **Description:** Live environment verification:
-  - [verification step 1] — tool: [Telegram MCP / curl / bash]
-  - [verification step 2] — tool: [tool]
-  Tools: [list of required MCP tools / curl / bash]
-- **Skill:** post-deploy-qa
 - **Reviewers:** none
