@@ -52,15 +52,15 @@ RAM monitoring (in existing monitor thread):
   Restart sequence:
     1. Shutdown old master (master.shutdown())
     2. Create new Master with same opts (confdir=session_tmpdir, same port)
-    3. Re-add same GeoFixAddon instance (preserves preset state) + new FlowCleanup
-    4. Start new master in new daemon thread
-    Note: CA cert is already loaded in Windows cert store — new Master reuses
-    existing CA from session_tmpdir (mitmproxy-ca-cert.pem was deleted but
-    TlsConfig caches the CA in memory; on restart it regenerates from confdir
-    if needed, but the cert store already trusts any CA from session_tmpdir).
-    IMPORTANT: If TlsConfig needs CA files that were deleted, restart must
-    either skip CA deletion initially, or re-generate and re-install CA cert.
-    This edge case must be tested in integration tests.
+       → TlsConfig generates new CA cert/key in session_tmpdir (old ones deleted)
+    3. Uninstall old CA from cert store (certutil -delstore old thumbprint)
+    4. Install new CA cert (certutil -addstore), get new thumbprint
+    5. Delete new CA key files from disk (preserve security hardening)
+    6. Update ProxyState with new ca_thumbprint, save state
+    7. Re-add same GeoFixAddon instance (preserves preset state) + new FlowCleanup
+    8. Start new master in new daemon thread
+    Note: During restart (~7 sec total with CA swap), browser gets
+    ERR_PROXY_CONNECTION_REFUSED — no requests leave the machine.
   Rate limit: max 3 restarts per hour, then log-only
 ```
 
@@ -103,9 +103,13 @@ RAM monitoring (in existing monitor thread):
 
 **Decision:** On RAM threshold breach, restart only the mitmproxy thread, not the entire process.
 
-**Rationale:** Full restart would lose tray icon, watchdog connection, system proxy settings. Thread restart only interrupts proxy traffic for ~5 seconds. During the restart window, the system proxy points at a non-listening port — browser requests fail and are retried automatically. This briefly exposes real Accept-Language headers on direct connections, but the window is short (~5 sec) and occurs at most 3 times per hour. User accepted this tradeoff.
+**Rationale:** Full restart would lose tray icon, watchdog connection, system proxy settings. Thread restart only interrupts proxy traffic for ~5 seconds. During the restart window, the system proxy still points at `127.0.0.1:PORT` — since the proxy is not listening, browsers receive `ERR_PROXY_CONNECTION_REFUSED` and **do not fall back to direct connections**. This means no requests leave the machine at all during restart — there is no location leak, just a brief connectivity gap. This is safe behavior: Chrome, Edge, and Firefox all refuse to bypass a configured system proxy when the proxy is unreachable.
 
-**Alternatives considered:** Full process restart via watchdog. Rejected as too disruptive. Graceful restart (start new before stopping old) on same port — not possible with TCP port binding.
+**Safety verification required:** Integration test must confirm that with system proxy set to a non-listening port, the browser does NOT send direct requests. If any browser is found to fall back to direct — this mechanism must be removed entirely.
+
+**CA certificate on restart:** The restart sequence must re-generate and re-install the CA certificate because the original CA key files were deleted from disk (security hardening). Sequence: shutdown old master → new Master generates new CA in confdir → `certutil -delstore` old CA → `certutil -addstore` new CA → delete new CA key files → update state with new thumbprint. This adds ~2 seconds to restart but preserves the CA key deletion security property.
+
+**Alternatives considered:** Full process restart via watchdog. Rejected as too disruptive. Graceful restart (start new before stopping old) on same port — not possible with TCP port binding. Keep CA key files on disk permanently — rejected, weakens security hardening.
 
 ### Decision 5: Keep watchdog as subprocess
 
@@ -194,12 +198,11 @@ bash (pytest, grep)
 |------|-----------|
 | Minimal Master missing essential addon for edge-case traffic (HTTP/2, CONNECT, WebSocket) | Include NextLayer (protocol detection). Add integration test for CONNECT tunneling. |
 | Flow cleanup conflicts with mitmproxy internals | With minimal Master, no View addon is loaded — flows are not stored. FlowCleanup is a safety net. |
-| Proxy restart drops in-flight requests | Browser retries failed requests. 10-min cooldown ensures rarity. User accepted tradeoff. |
+| Proxy restart causes brief connectivity gap (~7 sec) | System proxy set → browser gets ERR_PROXY_CONNECTION_REFUSED → no direct requests, no location leak. Integration test must verify no browser fallback to direct. If fallback found — remove auto-restart entirely. |
 | mitmproxy internal API changes break minimal Master | Pin mitmproxy version. Add startup assertion that proxy is listening. |
 | Windows memory API differences across versions | `PROCESS_MEMORY_COUNTERS.WorkingSetSize` is stable since XP. Fallback for non-Windows. |
 | PyInstaller hidden imports may need updating | Switching from `mitmproxy.tools.dump` to explicit addon imports changes the import graph. Add new `--hidden-import` flags if needed. Test build in CI. |
-| CA key files deleted before proxy restart | New Master's TlsConfig needs CA cert/key from confdir. Either keep CA files on disk (less secure) or handle CA re-generation + re-installation on restart. Integration test must verify TLS works after restart. |
-| Brief proxy bypass window during restart leaks real headers | ~5 sec window, max 3/hour. Documented in Decision 4. User accepted. |
+| CA key files deleted before proxy restart | Restart sequence re-generates CA, re-installs to cert store, deletes key files again. Adds ~2 sec to restart. Integration test verifies HTTPS works after restart with new CA. |
 
 ## Acceptance Criteria
 
@@ -212,7 +215,8 @@ Technical acceptance criteria (supplement user-spec criteria):
 - [ ] WebSocket message history trimmed to <=1 message per connection
 - [ ] RAM monitoring triggers at 300MB Private Working Set with 10-min cooldown, max 3/hour
 - [ ] Proxy restart reuses the same GeoFixAddon instance (preserves current preset and JS payload cache)
-- [ ] CA certificate lifecycle handled correctly on proxy restart (new Master can establish TLS)
+- [ ] CA certificate re-generated, re-installed, and key deleted on proxy restart — HTTPS works after restart
+- [ ] During proxy restart, no HTTP requests leave the machine (browser gets connection refused, not direct fallback)
 - [ ] No regressions in existing test suite (unit + integration + E2E)
 - [ ] No Dumper addon loaded (no stdout output per flow)
 
