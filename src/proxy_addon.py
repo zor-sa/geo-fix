@@ -201,3 +201,35 @@ class GeoFixAddon:
             flow.response.headers["content-security-policy"] = _modify_csp(original_csp, nonce)
 
         logger.debug("Injected JS into %s (nonce: %s)", flow.request.url, nonce[:8])
+
+
+class FlowCleanup:
+    """Addon that clears flow content after processing to reduce memory/GC pressure.
+
+    Must be registered last in the addon chain (after GeoFixAddon).
+    """
+
+    def response(self, flow: http.HTTPFlow) -> None:
+        """Clear request/response bodies after processing."""
+        flow.request.content = b""
+        if flow.response is not None:
+            flow.response.content = b""
+
+    def error(self, flow: http.HTTPFlow) -> None:
+        """Clear request body for errored flows."""
+        flow.request.content = b""
+
+    def websocket_message(self, flow: http.HTTPFlow) -> None:
+        """Trim WebSocket message history to last 1 message."""
+        if flow.websocket is None:
+            return
+        if flow.websocket.messages:
+            flow.websocket.messages[:] = flow.websocket.messages[-1:]
+
+    def websocket_end(self, flow: http.HTTPFlow) -> None:
+        """Clear flow content when WebSocket connection ends."""
+        flow.request.content = b""
+        if flow.response is not None:
+            flow.response.content = b""
+        if flow.websocket is not None and hasattr(flow.websocket, "messages"):
+            flow.websocket.messages.clear()

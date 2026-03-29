@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, PropertyMock
 import pytest
 
 from src.presets import PRESETS, CountryPreset
-from src.proxy_addon import GeoFixAddon, _find_inject_position, _build_js_payload, _generate_nonce, _modify_csp
+from src.proxy_addon import GeoFixAddon, FlowCleanup, _find_inject_position, _build_js_payload, _generate_nonce, _modify_csp
 
 
 class TestFindInjectPosition:
@@ -220,3 +220,104 @@ class TestGeoFixAddon:
         flow = make_flow()
         addon.request(flow)
         assert flow.request.headers["Accept-Language"] == "nl-NL,nl;q=0.9,en;q=0.8"
+
+
+class TestFlowCleanup:
+    @pytest.fixture
+    def cleanup_addon(self):
+        return FlowCleanup()
+
+    def _make_flow(self, *, with_response=True, body=b"hello world"):
+        """Create a minimal flow for FlowCleanup tests."""
+        class FakeRequest:
+            def __init__(self):
+                self.content = b"request body data"
+
+        class FakeResponse:
+            def __init__(self, content):
+                self.content = content
+
+        class FakeFlow:
+            def __init__(self, with_resp, body):
+                self.request = FakeRequest()
+                self.response = FakeResponse(body) if with_resp else None
+                self.websocket = None
+
+        return FakeFlow(with_response, body)
+
+    def test_flowcleanup_response_clears_content(self, cleanup_addon):
+        """response hook sets both flow.request.content and flow.response.content to empty."""
+        flow = self._make_flow()
+        assert flow.request.content == b"request body data"
+        assert flow.response.content == b"hello world"
+
+        cleanup_addon.response(flow)
+
+        assert flow.request.content == b""
+        assert flow.response.content == b""
+
+    def test_flowcleanup_response_guards_none_response(self, cleanup_addon):
+        """response hook handles flow.response being None."""
+        flow = self._make_flow(with_response=False)
+        cleanup_addon.response(flow)
+        assert flow.request.content == b""
+
+    def test_flowcleanup_error_clears_request_content(self, cleanup_addon):
+        """error hook clears flow.request.content."""
+        flow = self._make_flow()
+        assert flow.request.content == b"request body data"
+
+        cleanup_addon.error(flow)
+
+        assert flow.request.content == b""
+
+    def test_flowcleanup_websocket_message_trims_to_one(self, cleanup_addon):
+        """websocket_message hook with 5 messages leaves exactly 1 (the last)."""
+        flow = self._make_flow()
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.messages = [f"msg{i}" for i in range(5)]
+
+        flow.websocket = FakeWebSocket()
+        assert len(flow.websocket.messages) == 5
+
+        cleanup_addon.websocket_message(flow)
+
+        assert len(flow.websocket.messages) == 1
+        assert flow.websocket.messages[0] == "msg4"
+
+    def test_flowcleanup_websocket_message_guards_none(self, cleanup_addon):
+        """websocket_message handles flow.websocket being None."""
+        flow = self._make_flow()
+        flow.websocket = None
+        # Should not raise
+        cleanup_addon.websocket_message(flow)
+
+    def test_flowcleanup_websocket_message_empty_messages(self, cleanup_addon):
+        """websocket_message handles empty messages list."""
+        flow = self._make_flow()
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.messages = []
+
+        flow.websocket = FakeWebSocket()
+        cleanup_addon.websocket_message(flow)
+        assert flow.websocket.messages == []
+
+    def test_flowcleanup_websocket_end_removes_flow(self, cleanup_addon):
+        """websocket_end clears request/response content to release memory."""
+        flow = self._make_flow()
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.messages = ["msg1", "msg2"]
+
+        flow.websocket = FakeWebSocket()
+
+        cleanup_addon.websocket_end(flow)
+
+        assert flow.request.content == b""
+        assert flow.response.content == b""
+        assert flow.websocket.messages == []
