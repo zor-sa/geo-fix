@@ -187,3 +187,15 @@ Review details — in JSON files via links. QA report — in logs/working/.
 **Verification:**
 - `pytest test/ -x -v` → 244 passed, 13 skipped
 - Audit report → [logs/working/task-8/test-audit.md]
+
+## Task 9: Pre-deploy QA
+
+**Status:** Done
+**Commit:** 04318e5
+**Agent:** qa-runner
+**Summary:** Ran full test suite (244 passed, 13 skipped, 0 failed). Verified 24 acceptance criteria from user-spec and tech-spec. Found 1 blocker: Accept-Language rewriting restricted to target domains only (regression from task 3), violating user-spec requirement for all-domain rewriting. 3 resource criteria (RAM, CPU) deferred to user verification on Windows. All audits (tasks 6-8) report no blockers.
+**Deviations:** None.
+
+**Verification:**
+- `pytest test/ -x -v` → 244 passed, 13 skipped
+- QA report → [logs/working/task-9/qa-report.md]
