@@ -359,7 +359,7 @@ def main():
     addon = GeoFixAddon(preset)
 
     # Start mitmproxy FIRST — no system changes until proxy is confirmed running
-    proxy_thread, proxy_master = _start_mitmproxy(addon, confdir=session_tmpdir, port=port)
+    proxy_thread, proxy_master = _start_mitmproxy(addon, confdir=session_tmpdir, port=port)  # noqa: F841 — proxy_master used by Task 3
 
     # Delete CA private key from disk — mitmproxy has loaded it into memory.
     # Key exists on disk only during mitmproxy startup (seconds, not hours).

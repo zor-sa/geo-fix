@@ -134,3 +134,4 @@ class TestReturnsTuple:
         assert len(result) == 2, "Must return (thread, master)"
         thread, master = result
         assert isinstance(thread, threading.Thread)
+        assert master is mock_master_instance, "Must return the actual master instance, not None"
