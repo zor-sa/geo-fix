@@ -120,3 +120,31 @@ Review details — in JSON files via links. QA report — in logs/working/.
 **Verification:**
 - `pytest test/test_proxy_addon.py test/test_presets.py -v` → 77 passed
 - `pytest test/ -x` → 237 passed, 13 skipped
+
+## Task 5: Integration testing of optimized proxy
+
+**Status:** Done
+**Commit:** 1365fe5
+**Agent:** coder-integ-2
+**Summary:** Created `test/test_integration_proxy.py` with 7 integration tests covering HTTP traffic, HTTPS/CONNECT tunneling, JS injection through real proxy pipeline (via `_HostOverrideAddon`), FlowCleanup content clearing with tracemalloc memory measurement, FlowCleanup production bug regression gate, and same-port proxy restart. Updated `test_integration_windows.py` to use minimal Master (not DumpMaster). Key discovery: `Master.shutdown()` doesn't close listener socket — explicit `ServerInstance.stop()` needed for same-port rebind. Documented FlowCleanup Task 2 bug (clears response before client receives it) as explicit test assertion.
+**Deviations:** JS injection test uses `_HostOverrideAddon` to override `flow.request.host` in response hook rather than a real DNS-routed request — localhost proxy sees `127.0.0.1` as host, not the Host header. Added 7th test (`test_flowcleanup_empties_response_body`) not in original spec — regression gate for Task 2 FlowCleanup bug.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: changes_required (2 critical, 4 major) → [logs/working/task-5/code-reviewer-round1.json]
+
+*Round 2 (after fixes):*
+- code-reviewer: approved_with_suggestions (1 major) → [logs/working/task-5/code-reviewer-2.json]
+- security-auditor: approved (3 minor) → [logs/working/task-5/security-auditor-round1.json]
+- test-reviewer: failed (1 critical, 3 major) → [logs/working/task-5/test-reviewer-round1.json]
+
+*Round 3 (after test fixes):*
+- test-reviewer: needs_improvement (1 major, 2 minor) → [logs/working/task-5/test-reviewer-round2.json]
+
+*Round 4 (final):*
+- test-reviewer: passed → [logs/working/task-5/test-reviewer-round3.json]
+
+**Verification:**
+- `pytest test/test_integration_proxy.py -v` → 7 passed
+- `pytest test/ -x` → 244 passed, 13 skipped
