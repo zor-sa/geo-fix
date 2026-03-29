@@ -1,0 +1,66 @@
+{
+  "status": "pass",
+  "round": 2,
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": true
+  },
+  "notes": {
+    "tasks_source": "Implementation Tasks are embedded in tech-spec (no separate tasks/*.md files). Tasks evaluated from tech-spec 'Implementation Tasks' section."
+  },
+  "requirements_total": 20,
+  "requirements_covered": 19,
+  "requirements_partial": 1,
+  "requirements_missing": 0,
+  "requirements": [
+    { "id": "US-1",  "text": "App starts with ~100-150MB RAM consumption",                                     "status": "covered",  "coverage": "Solution section states target ~100-150MB; Decision 1 addresses baseline reduction via minimal Master; Acceptance Criteria item 1 formalises it; Task 1 implements it." },
+    { "id": "US-2",  "text": "RAM stable during active use (15+ Google tabs)",                                "status": "covered",  "coverage": "Flow lifecycle management (Solution item 2) and FlowCleanup addon (Task 2) directly prevent in-session growth." },
+    { "id": "US-3",  "text": "After 8 hours RAM does not exceed 150MB",                                       "status": "covered",  "coverage": "Addressed by flow cleanup (no unbounded growth), WS trim, and RAM watchdog (Task 3) as backstop. Acceptance Criteria item 6 formalises threshold." },
+    { "id": "US-4",  "text": "CPU during normal browsing ≤5% average",                                       "status": "covered",  "coverage": "Decision 1 explains ~80% reduction in per-flow hook overhead. Task 4 adds micro-optimisations. Solution section quantifies CPU target." },
+    { "id": "US-5",  "text": "All current functions unchanged (spoofing, tray, watchdog, country switch, wizard, cleanup)", "status": "covered", "coverage": "Solution final line: 'All existing functionality, security properties, and tests are preserved unchanged.' Decision 5 explicitly preserves watchdog. GeoFixAddon reuse on restart preserves preset state. Task 9 (pre-deploy QA) validates." },
+    { "id": "US-6",  "text": "Completed flows deleted from proxy memory after processing — count does not grow", "status": "covered", "coverage": "FlowCleanup.response()/error()/websocket_end() hooks cover this. Architecture diagram, Task 2, Acceptance Criteria item 4, and integration test 'no flow objects retained' all address it. Risk note that with minimal Master, View addon is not loaded so flows are not stored even without cleanup." },
+    { "id": "US-7",  "text": "WebSocket message history trimmed — ≤1 message stored",                        "status": "covered",  "coverage": "FlowCleanup.websocket_message() trims to last 1 message. Architecture diagram, Acceptance Criteria item 5, unit test for WS trim all cover it." },
+    { "id": "US-8",  "text": "RAM watchdog: restart at 300MB, cooldown ≥10 min, max 3/hour",                  "status": "covered",  "coverage": "Decision 3 (extend monitor thread), Decision 4 (proxy thread restart), Architecture RAM monitoring block, Task 3, Acceptance Criteria item 6, unit tests for threshold/cooldown/rate-limiting all cover it." },
+    { "id": "US-9",  "text": "All existing tests (unit, integration, E2E) pass without changes",              "status": "covered",  "coverage": "Testing Strategy explicitly states 'must pass unchanged' for all three suites. Acceptance Criteria final item. Task 5 and Task 9 verify." },
+    { "id": "US-10", "text": "Accept-Language header rewriting works on target and all other domains",         "status": "covered",  "coverage": "Preserved via GeoFixAddon reuse (same instance across restarts). Existing E2E tests validate. No tech-spec decision removes this behaviour." },
+    { "id": "US-11", "text": "JS injection works on target domains",                                          "status": "covered",  "coverage": "Integration test 'verify JS injection in response'. E2E tests run through optimised proxy. FlowCleanup runs after GeoFixAddon so injection happens before bodies are cleared." },
+    { "id": "US-12", "text": "CSP header contains nonce of injected script",                                  "status": "covered",  "coverage": "E2E tests validate CSP nonce. Security Audit task (Task 7) includes 'CSP nonce injection with minimal Master'. Acceptance Criteria requires no regression in existing test suite." },
+    { "id": "US-13", "text": "On main process crash watchdog performs cleanup within 10 seconds",              "status": "covered",  "coverage": "Decision 5 explicitly preserves watchdog subprocess. No changes to watchdog architecture. Existing tests cover this." },
+    { "id": "US-14", "text": "Country switching via tray menu switches preset without proxy restart",          "status": "covered",  "coverage": "GeoFixAddon is reused across proxy restarts (preserves preset state). Country switching path does not touch proxy restart logic. Acceptance Criteria item 7 confirms same GeoFixAddon instance reused." },
+    { "id": "UC-1",  "text": "All current functions fully preserved — refactoring not redesign",              "status": "covered",  "coverage": "Solution last line. All decisions justify changes as additive/replacement, not feature removal." },
+    { "id": "UC-2",  "text": "Security level must not decrease (CA lifecycle, DPAPI, session isolation)",     "status": "partial",  "coverage": "CA lifecycle risk is documented and in Acceptance Criteria item 8. DPAPI state encryption is not mentioned anywhere in tech-spec decisions or acceptance criteria — no explicit preservation guarantee. Session isolation also not addressed. Task 7 (security audit) would catch this, but the spec itself has a gap for DPAPI and session isolation." },
+    { "id": "UC-3",  "text": "Watchdog must remain reliable — 15MB saving does not justify reduced reliability", "status": "covered", "coverage": "Decision 5 explicitly preserves watchdog subprocess with this exact rationale." },
+    { "id": "UC-4",  "text": "App must work on Windows 10/11, Python 3.12+",                                  "status": "covered",  "coverage": "Decision 6 uses ctypes API stable since Windows XP. No dependency changes. Dependencies section lists no new packages." },
+    { "id": "UC-5",  "text": "PyInstaller build must continue to work",                                       "status": "covered",  "coverage": "Risk table entry: 'PyInstaller hidden imports may need updating — Test build in CI.' Addresses the Round 1 gap." },
+    { "id": "UC-6",  "text": "Compatibility with existing desktop shortcuts and install.bat",                 "status": "covered",  "coverage": "No changes to CLI/UI interface. No entry point changes. Preserved implicitly by refactoring scope." }
+  ],
+  "findings": [
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "UC-2: Security level must not decrease (CA key lifecycle, DPAPI state encryption, session isolation)",
+      "detail": "CA key lifecycle on restart is addressed in the risk table and Acceptance Criteria item 8. However, DPAPI state encryption and session isolation — both explicitly named in the user-spec constraint — are not mentioned anywhere in the tech-spec (decisions, acceptance criteria, or testing strategy). There is no statement that these properties are unaffected by the changes, and no test coverage planned for them. Task 7 (security audit) may catch this in execution, but the spec itself provides no explicit preservation guarantee for DPAPI and session isolation.",
+      "severity": "minor"
+    }
+  ],
+  "round1_resolutions": [
+    {
+      "issue": "PyInstaller hidden imports",
+      "resolution": "RESOLVED. Risk table now contains: 'PyInstaller hidden imports may need updating — Switching from mitmproxy.tools.dump to explicit addon imports changes the import graph. Add new --hidden-import flags if needed. Test build in CI.'"
+    },
+    {
+      "issue": "GeoFixAddon reuse mechanism",
+      "resolution": "RESOLVED. Architecture How-it-works block and Acceptance Criteria item 7 both explicitly state: 'Proxy restart reuses the same GeoFixAddon instance (preserves current preset and JS payload cache)'. Shared Resources table confirms single GeoFixAddon instance reused across restarts."
+    },
+    {
+      "issue": "CA lifecycle on restart",
+      "resolution": "RESOLVED. Both the Architecture block and the risk table now document the CA lifecycle edge case explicitly. Acceptance Criteria item 8 formalises it: 'CA certificate lifecycle handled correctly on proxy restart (new Master can establish TLS)'. Integration test for TLS-after-restart is required."
+    }
+  ],
+  "overengineering_check": "No overengineering detected. All three technical vectors (addon minimisation, flow cleanup, RAM watchdog) directly follow from user requirements. FlowCleanup as a separate addon vs merging into GeoFixAddon is a minor design choice with clear separation-of-concerns justification. No YAGNI abstractions, no unnecessary layers, no premature optimisation infrastructure.",
+  "underengineering_check": "No critical gaps. Error handling: RAM monitor cooldown and rate-limiting are specified. Flow cleanup ordering (after GeoFixAddon) prevents data races. CA restart edge case is documented. Concurrent access: single GeoFixAddon instance reuse is safe as only proxy thread is restarted. One minor gap on DPAPI/session isolation noted in findings.",
+  "solution_depth_check": "Solution section is substantive. It names specific mitmproxy classes (DumpMaster vs Master, exact addon list), explains ~80% hook overhead reduction with quantified addon count (~27 unused), documents the restart sequence step-by-step, and justifies each decision with rejected alternatives. This goes well beyond paraphrasing the user-spec.",
+  "structural_integrity_check": "All decision-level content is in the Decisions section. Task descriptions in Implementation Tasks are appropriately brief scope descriptions without embedded architecture choices or technology rationale. No structural gaps detected.",
+  "summary": "19/20 requirements covered, 1 partial. 0 critical findings. 1 minor finding: DPAPI state encryption and session isolation (both named in UC-2) have no explicit preservation statement or test coverage in the tech-spec — CA lifecycle is covered, but the other two UC-2 components are silently assumed unchanged. All three Round 1 issues (PyInstaller hiddenimports, GeoFixAddon reuse, CA lifecycle on restart) are fully resolved. Tech-spec is ready for implementation."
+}

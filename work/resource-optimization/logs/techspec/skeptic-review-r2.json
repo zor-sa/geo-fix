@@ -1,0 +1,68 @@
+{
+  "status": "approved",
+  "summary": "Checked 31 claims, found 0 critical mirages. 3 minor/major findings: addon count inaccuracy in Solution section (~27 vs actual 31), Windows memory API naming inconsistency (WorkingSetSize vs Private Working Set), and pseudocode omits constructor calls for addon instantiation. All import paths verified correct. All file paths exist. All API methods confirmed.",
+  "findings": [
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "Solution section: 'replace DumpMaster (loads ~27 default addons + Dumper + KeepServing + ErrorCheck)'",
+      "reality": "mitmproxy.addons.default_addons() returns 31 addons, not ~27. DumpMaster also adds ReadFileStdin (omitted from the spec's list). Total with Dumper: 31 + Dumper + KeepServing + ReadFileStdin + ErrorCheck = 35. Decision 1 says '35 default addons' (closer to correct, though it mislabels them all as 'default'). The ~27 figure in the Solution section is off by 4+.",
+      "source": "tech-spec.md, Solution section (attack vector 1) and Decision 1",
+      "fix": "Change '~27 default addons' to '31 default addons' in the Solution section. Optionally note that DumpMaster also adds ReadFileStdin beyond the three named extras."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "Decision 6 and Acceptance Criteria: 'PROCESS_MEMORY_COUNTERS.WorkingSetSize is stable since Windows XP' paired with 'RAM monitoring triggers at 300MB Private Working Set'",
+      "reality": "WorkingSetSize in PROCESS_MEMORY_COUNTERS is the Total Working Set (includes shared pages), NOT the Private Working Set. Private Working Set corresponds to PrivateUsage in PROCESS_MEMORY_COUNTERS_EX. For a Python process these values are close, but the spec names them inconsistently — the narrative says 'Private Working Set' while the struct field used is WorkingSetSize (Total Working Set). This is a naming mismatch, not a functional blocker.",
+      "source": "tech-spec.md, Decision 6 and Acceptance Criteria",
+      "fix": "Either rename 'Private Working Set' to 'Working Set' throughout, or switch to PROCESS_MEMORY_COUNTERS_EX.PrivateUsage and rename consistently."
+    },
+    {
+      "severity": "minor",
+      "type": "missing_pattern",
+      "claim": "Architecture 'How it works' pseudocode: master.addons.add(Core, Proxyserver, NextLayer, TlsConfig) — passes class names without parentheses",
+      "reality": "mitmproxy AddonManager.add() requires instances, not classes. Correct call is master.addons.add(Core(), Proxyserver(), NextLayer(), TlsConfig()). The pseudocode without () would pass class objects and fail at runtime. This is likely intentional pseudocode shorthand, but a developer following it literally would produce broken code.",
+      "source": "tech-spec.md, Architecture section, 'How it works' pseudocode block",
+      "fix": "Add parentheses to all addon names in the pseudocode: Core(), Proxyserver(), NextLayer(), TlsConfig(), KeepServing(), ErrorCheck(), GeoFixAddon, FlowCleanup()."
+    }
+  ],
+  "stats": {
+    "total_claims_checked": 31,
+    "confirmed": 28,
+    "mirages_found": 3,
+    "verified_claims": [
+      "src/main.py exists",
+      "src/proxy_addon.py exists",
+      "src/presets.py exists",
+      "src/system_config.py exists",
+      "test/test_proxy_addon.py exists",
+      "test/test_presets.py exists",
+      "test/test_integration_windows.py exists",
+      "test/test_integration_proxy.py does not exist yet (new file, correct)",
+      "mitmproxy.master.Master importable",
+      "mitmproxy.addons.core.Core importable",
+      "mitmproxy.addons.proxyserver.Proxyserver importable",
+      "mitmproxy.addons.next_layer.NextLayer importable",
+      "mitmproxy.addons.tlsconfig.TlsConfig importable",
+      "mitmproxy.addons.errorcheck.ErrorCheck importable",
+      "mitmproxy.addons.keepserving.KeepServing importable",
+      "mitmproxy.tools.dump.DumpMaster importable",
+      "mitmproxy.options.Options importable",
+      "Master.shutdown() method exists and is thread-safe",
+      "Master.run() method exists",
+      "_start_mitmproxy() function in main.py",
+      "_monitor_loop() function in main.py (existing monitor thread)",
+      "_find_inject_position() function in proxy_addon.py",
+      "is_target_domain() function in presets.py",
+      "GeoFixAddon.request() method in proxy_addon.py",
+      "GeoFixAddon.response() method in proxy_addon.py",
+      "GeoFixAddon.switch_preset() method in proxy_addon.py",
+      "ProxyState dataclass in system_config.py",
+      "websocket_message addon hook name confirmed (WebsocketMessageHook.name == 'websocket_message')",
+      "websocket_end addon hook name confirmed (WebsocketEndHook.name == 'websocket_end')",
+      "flow.websocket.messages attribute exists on WebSocketData",
+      "SaveHar maintains internal self.flows list (supports spec claim about flow accumulation)"
+    ]
+  }
+}

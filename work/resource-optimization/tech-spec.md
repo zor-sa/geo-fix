@@ -11,7 +11,7 @@ size: L
 
 Reduce geo-fix RAM from ~200-300MB (growing unbounded) to a stable ~100-150MB, and average CPU from 5-15% to under 5% during active browsing. Three main attack vectors:
 
-1. **Minimize mitmproxy addon chain** — replace DumpMaster (loads ~27 default addons + Dumper + KeepServing + ErrorCheck) with base `Master` class plus only the 5-6 addons required for HTTPS proxying. This eliminates ~25 unused addons from the hook processing chain, each of which registers hooks checked on every flow event.
+1. **Minimize mitmproxy addon chain** — replace DumpMaster (loads ~31 default addons + Dumper) with base `Master` class plus only the 6 addons required for HTTPS proxying. This eliminates ~26 unused addons from the hook processing chain, each of which registers hooks checked on every flow event.
 
 2. **Flow lifecycle management** — add a cleanup addon that explicitly clears flow content (request/response bodies) after processing to help Python's GC reclaim memory faster, and trims WebSocket message history to prevent unbounded growth during long sessions (Google Docs, Meet).
 
@@ -32,10 +32,10 @@ All existing functionality, security properties, and tests are preserved unchang
 ```
 Startup:
   main.py → Master(opts) instead of DumpMaster(opts)
-         → master.addons.add(Core, Proxyserver, NextLayer, TlsConfig)
-         → master.addons.add(KeepServing, ErrorCheck)
-         → master.addons.add(GeoFixAddon)
-         → master.addons.add(FlowCleanup)  # LAST — runs after GeoFixAddon
+         → master.addons.add(Core(), Proxyserver(), NextLayer(), TlsConfig())
+         → master.addons.add(KeepServing(), ErrorCheck())
+         → master.addons.add(GeoFixAddon)      # existing instance
+         → master.addons.add(FlowCleanup())    # LAST — runs after GeoFixAddon
 
 Request lifecycle (unchanged):
   Browser → proxy → GeoFixAddon.request() → upstream
@@ -119,7 +119,7 @@ RAM monitoring (in existing monitor thread):
 
 **Decision:** Use Windows `ctypes` API (`GetProcessMemoryInfo`) directly instead of adding `psutil`.
 
-**Rationale:** Avoids new dependency. `PROCESS_MEMORY_COUNTERS.WorkingSetSize` is stable since Windows XP. Fallback to `/proc/self/status` on Linux for testing.
+**Rationale:** Avoids new dependency. Uses `PROCESS_MEMORY_COUNTERS_EX.PrivateUsage` for accurate Private Working Set measurement (not `WorkingSetSize` which includes shared pages). Stable since Windows XP. Fallback to `VmRSS` from `/proc/self/status` on Linux for testing.
 
 **Alternatives considered:** `psutil` package — reliable cross-platform but adds ~10MB to bundle and new dependency. Rejected.
 
@@ -222,7 +222,7 @@ Technical acceptance criteria (supplement user-spec criteria):
 
 #### Task 1: Replace DumpMaster with minimal Master
 
-- **Description:** Replace mitmproxy `DumpMaster` initialization in `_start_mitmproxy()` with base `Master` class plus only essential addons (Core, Proxyserver, NextLayer, TlsConfig, KeepServing, ErrorCheck). This removes ~25 unused addons and their per-flow hook overhead.
+- **Description:** Replace mitmproxy `DumpMaster` initialization in `_start_mitmproxy()` with base `Master` class plus only essential addons (Core, Proxyserver, NextLayer, TlsConfig, KeepServing, ErrorCheck). This removes ~26 unused addons and their per-flow hook overhead.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `python -c "from mitmproxy.master import Master; from mitmproxy.options import Options; print('Master import OK')"` → no error
