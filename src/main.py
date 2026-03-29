@@ -377,16 +377,21 @@ def _restart_mitmproxy(
         return None, None
 
     # 2. Uninstall old CA cert
+    old_thumbprint = state.ca_thumbprint
     try:
         from src.system_config import uninstall_ca_cert as _uninstall
-        _uninstall(thumbprint=state.ca_thumbprint)
+        _uninstall(thumbprint=old_thumbprint)
     except Exception as e:
-        logger.warning("Failed to uninstall old CA: %s", e)
+        logger.warning("Failed to uninstall old CA (thumbprint=%s) — may remain in trust store: %s",
+                       old_thumbprint, e)
 
     # 3. Start new master (generates new CA in confdir)
     # _start_mitmproxy re-adds the same GeoFixAddon instance + new FlowCleanup()
     try:
         new_thread, new_master = _start_mitmproxy(addon, confdir=confdir, port=port)
+    except SystemExit:
+        logger.error("_start_mitmproxy called sys.exit during restart — proxy failed to start")
+        return None, None
     except Exception as e:
         logger.error("Failed to start new mitmproxy: %s", e)
         return None, None
@@ -395,7 +400,10 @@ def _restart_mitmproxy(
     new_thumbprint = install_ca_cert(confdir)
     if new_thumbprint is None:
         logger.error("CA cert install failed after restart — proxy running without trusted CA")
-        # Proxy is running but CA not installed — abort restart
+        # Delete CA key files even on failure — security hardening
+        delete_ca_key_files(confdir)
+        delete_ca_public_cert(confdir)
+        # Shutdown the new master — no trusted CA means broken HTTPS
         try:
             new_master.shutdown()
         except Exception:
