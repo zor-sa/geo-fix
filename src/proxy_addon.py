@@ -144,11 +144,9 @@ class GeoFixAddon:
             logger.info("Switched to preset: %s", preset.code)
 
     def request(self, flow: http.HTTPFlow) -> None:
-        """Rewrite Accept-Language header on target domain requests only."""
+        """Rewrite Accept-Language header on ALL requests passing through proxy."""
         with self._lock:
             self._last_flow_time = time.monotonic()  # track ALL traffic for idle guard
-            if not is_target_domain(flow.request.host):
-                return
             accept_lang = self._preset.accept_language
         flow.request.headers["Accept-Language"] = accept_lang
 

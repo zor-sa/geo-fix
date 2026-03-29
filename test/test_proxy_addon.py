@@ -157,11 +157,11 @@ class TestGeoFixAddon:
         addon.request(flow)
         assert flow.request.headers["Accept-Language"] == "en-US,en;q=0.9"
 
-    def test_request_skips_non_target_domain(self, addon, make_flow):
+    def test_request_rewrites_accept_language_non_target_domain(self, addon, make_flow):
         flow = make_flow(host="example.com")
         flow.request.headers["Accept-Language"] = "ru-RU"
         addon.request(flow)
-        assert flow.request.headers["Accept-Language"] == "ru-RU"
+        assert flow.request.headers["Accept-Language"] == "en-US,en;q=0.9"
 
     def test_response_injects_js_for_target_domain(self, addon, make_flow):
         flow = make_flow()
@@ -356,3 +356,59 @@ class TestFindInjectPositionCPU:
         pos = _find_inject_position(html)
         assert html[pos - 1] == ">"
         assert pos == len('<html><head lang="en">')
+
+
+class TestAcceptLanguageAllDomains:
+    """Accept-Language must be rewritten for ALL domains, not just targets."""
+
+    @pytest.fixture
+    def addon(self):
+        return GeoFixAddon(PRESETS["US"])
+
+    @pytest.fixture
+    def make_flow(self):
+        class FakeHeaders(dict):
+            def __contains__(self, key):
+                return super().__contains__(key.lower()) or super().__contains__(key)
+            def get(self, key, default=None):
+                return super().get(key, super().get(key.lower(), default))
+            def __getitem__(self, key):
+                try:
+                    return super().__getitem__(key)
+                except KeyError:
+                    return super().__getitem__(key.lower())
+
+        class FakeRequest:
+            def __init__(self, host, headers):
+                self.host = host
+                self.url = f"https://{host}/"
+                self.headers = headers
+
+        class FakeFlow:
+            def __init__(self, request):
+                self.request = request
+                self.response = None
+
+        def _make(host="example.com"):
+            req_headers = FakeHeaders({"Accept-Language": "ru-RU,ru;q=0.9"})
+            request = FakeRequest(host, req_headers)
+            return FakeFlow(request)
+        return _make
+
+    def test_non_target_domain_gets_accept_language_rewritten(self, addon, make_flow):
+        """Non-target domain (example.com) must still get Accept-Language rewritten."""
+        flow = make_flow(host="example.com")
+        addon.request(flow)
+        assert flow.request.headers["Accept-Language"] == "en-US,en;q=0.9"
+
+    def test_random_domain_gets_accept_language_rewritten(self, addon, make_flow):
+        """Completely random domain must get Accept-Language rewritten."""
+        flow = make_flow(host="some-random-site.org")
+        addon.request(flow)
+        assert flow.request.headers["Accept-Language"] == "en-US,en;q=0.9"
+
+    def test_target_domain_still_gets_accept_language_rewritten(self, addon, make_flow):
+        """Target domain (google.com) also gets Accept-Language rewritten."""
+        flow = make_flow(host="www.google.com")
+        addon.request(flow)
+        assert flow.request.headers["Accept-Language"] == "en-US,en;q=0.9"
