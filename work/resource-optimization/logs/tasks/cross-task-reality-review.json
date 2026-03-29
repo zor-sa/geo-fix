@@ -1,0 +1,168 @@
+{
+  "type": "cross-task-reality",
+  "iteration": 1,
+  "tasks_reviewed": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  "status": "needs_fixes",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "tasks": [1, 2],
+      "issue": "Both Task 1 and Task 2 declare depends_on: [] (wave 1, independent), but Task 2's 'What to do' step 2 explicitly requires modifying src/main.py to add FlowCleanup to the addon chain — and that step requires Task 1's DumpMaster→Master change to be in place first. Task 2's Details section even warns: 'the src/main.py step should be done after Task 1 lands.' Two agents running wave 1 in parallel will both edit src/main.py, causing a merge conflict on _start_mitmproxy(). Task 2 should declare depends_on: [1] to prevent parallel execution of main.py edits.",
+      "fix": "Change Task 2's frontmatter to depends_on: [1]. Alternatively, scope Task 2 strictly to proxy_addon.py (only the FlowCleanup class creation) and move the main.py addon-chain registration into Task 1 or a separate task."
+    },
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "tasks": [3],
+      "issue": "Task 3 modifies src/proxy_addon.py (adds _last_flow_time to GeoFixAddon.request()) — the same file Task 2 is already modifying to add FlowCleanup. Task 3 declares depends_on: [1, 2], which is correct, but the actual edit to proxy_addon.py is not scoped in the task header's 'Files to modify' list (only src/main.py is listed there). An implementer reading only the header may not realise proxy_addon.py also changes, creating an unacknowledged file-modification dependency.",
+      "fix": "Add src/proxy_addon.py to Task 3's 'Files to modify' list in the header so the scope is unambiguous."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "tasks": [3],
+      "issue": "Task 3's restart sequence calls uninstall_ca_cert(thumbprint=state.ca_thumbprint). The actual signature in src/system_config.py is uninstall_ca_cert(thumbprint: Optional[str] = None) — the parameter is a positional/keyword arg named 'thumbprint'. This matches. However, install_ca_cert(session_tmpdir) is called expecting it to return a thumbprint. Checking the actual code: install_ca_cert(confdir: str) -> Optional[str] — the function CAN return None if certutil fails. Task 3's edge case note says 'if install_ca_cert() returns None ... do not proceed with starting new master.' But the restart function must handle this robustly, and the task description does not explicitly list an acceptance criterion covering the None return path. This is a feasibility gap.",
+      "fix": "Add an acceptance criterion to Task 3: 'If install_ca_cert() returns None, the restart is aborted and the failure is logged; the rate limit counters are NOT incremented.' This matches the edge case note but should be a checkable criterion."
+    },
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "tasks": [8],
+      "issue": "Task 8 (Test Audit) notes in its Details section that test/test_integration_windows.py line 45 uses DumpMaster directly ('TestProxyStartsAndInjects.test_proxy_starts_and_rewrites_header'). After Task 1, _start_mitmproxy() uses Master instead of DumpMaster, but test_integration_windows.py will still instantiate DumpMaster independently on line 45 (confirmed by reading the file). Task 8 only flags this as an observation — it is read-only. However, no task in the plan actually updates test_integration_windows.py to use the new minimal Master. This means after Task 1 lands, the integration test still exercises DumpMaster, not the optimized path, and the tech-spec acceptance criterion 'Existing integration tests: must pass unchanged' silently continues testing the old code path. There is a missing task that updates this integration test.",
+      "fix": "Either: (a) assign the test_integration_windows.py update to Task 1 or Task 5, or (b) accept the status quo and add a comment to Task 8's report template explicitly noting this intentional gap. Currently no task owns this file modification and it will remain testing DumpMaster indefinitely."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "tasks": [1, 3],
+      "issue": "Task 1 changes _start_mitmproxy() to return (thread, master) instead of just thread. Task 3 depends on this and uses the master reference. However, the current src/main.py code (line 347) calls: proxy_thread = _start_mitmproxy(addon, confdir=session_tmpdir, port=port) and stores the result in proxy_thread only. When Task 1 changes the return type to (thread, master), the call site on line 347 in main() also needs updating. Task 1's acceptance criteria mention 'all call sites updated accordingly', but there is only one call site in main() and it is straightforward. This is not a blocker but the single call site must be tracked.",
+      "fix": "No additional task needed — Task 1 explicitly lists this. But it is worth flagging so the implementer does not skip updating line 347 of main.py."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "tasks": [3],
+      "issue": "Task 3 uses module-level variables _last_restart_time and _restart_timestamps to track cooldown and rate limiting, but main.py currently has no such module-level mutable state for proxy operations (only _cleanup_done, _cleanup_lock, _watchdog_proc, _stop_token, _session_tmpdir). The task notes 'store both as accessible references: either as instance variables ... or as module-level references' but leaves the choice to the implementer. If the master reference is also stored at module level, _restart_mitmproxy() will need to mutate a module-level 'current_master' variable. This design choice is not coordinated with Task 1 (which determines how master is returned and stored), creating a coordination gap between Tasks 1 and 3 that could result in two different designs being chosen.",
+      "fix": "Pin the design in the task: add an explicit note that Task 1 should store master as a module-level variable (e.g., _current_master) that Task 3's _restart_mitmproxy() can read and update."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "tasks": [5],
+      "issue": "Task 5 says to use 'a unique port (e.g., 18092+) to avoid collisions with test_integration_windows.py (port 18090/18091)'. However, test_integration_windows.py only uses port 18090 (confirmed: line 47 uses 18090; line 18091 appears in TestCACertificate but only as a transient master that is immediately shut down). Task 5 advises avoiding 18092+ but 18091 would also be safe if 18091 is released before the new tests run. This is a minor inaccuracy in the hint but not dangerous. More critically: Task 5 creates test/test_integration_proxy.py as a new file, but the 'Starting the proxy in tests' section advises 'avoid importing _select_port() from src/main.py as it pulls in heavy side-effect imports'. This is sound advice but does not mention that importing src.main directly in tests triggers module-level globals initialization (e.g., STATE_FILE computation). The task should warn against importing from src.main at module scope in test files.",
+      "fix": "Add a note to Task 5: 'Do not import src.main at the module level in test files — import only mitmproxy and src.proxy_addon directly to avoid side effects from main.py module initialization.'"
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "tasks": [3],
+      "issue": "Task 3's Implementation hints section contains a full ctypes struct definition prescription: 'Use ctypes to define a PROCESS_MEMORY_COUNTERS_EX structure with SIZE_T fields (see MSDN for the full field list); the target field is PrivateUsage. Call GetProcessMemoryInfo with the current process handle obtained from kernel32.GetCurrentProcess().' This is a near-complete implementation recipe including function names, struct name, and field names — crossing the line from 'hint' into 'prescribe the solution.'",
+      "fix": "Trim the hint to: 'Use ctypes GetProcessMemoryInfo with PROCESS_MEMORY_COUNTERS_EX; target field is PrivateUsage. See MSDN for struct layout.' Remove the step-by-step prescription."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "tasks": [4],
+      "issue": "Task 4's Implementation hints for both _find_inject_position() and is_target_domain() contain complete algorithmic prescriptions including exact regex patterns, exact variable names, and exact one-liner implementations. For example: 're.search(r\"<head[\\s>]\", html_text, re.IGNORECASE)' and 'return host.endswith(_TARGET_DOMAINS_TUPLE) or host in {d.lstrip(\".\") for d in TARGET_DOMAINS}'. These are fully specified implementations, not hints pointing to patterns.",
+      "fix": "Reduce to: 'Use re.search with re.IGNORECASE instead of a full .lower() copy. For is_target_domain, use Python's tuple form of str.endswith() for a single C-level call.' Remove the inline code prescriptions."
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "tasks": [6, 7, 8],
+      "issue": "Tasks 6, 7, and 8 all declare depends_on: [5] (wave 4). However, Task 6 (code audit) reads src/main.py, src/proxy_addon.py, and src/presets.py — the source files. Task 8 (test audit) reads test files including test/test_integration_proxy.py which is created by Task 5. Both correctly depend on Task 5. However, all three audit tasks are in the same wave and could run in parallel. The report destinations are different (code-audit.md, security-auditor-1.json, test-audit.md), so there are no file-write conflicts. This is clean.",
+      "fix": "No action needed — parallel audit tasks are correctly independent."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "tasks": [3],
+      "issue": "Task 3 says 'float assignment is atomic in CPython' for _last_flow_time but then adds 'use a lock to be safe'. This is contradictory guidance. The tech-spec idle guard design relies on this being safe without a lock (the monitor thread reads, the mitmproxy thread writes; with CPython's GIL, float write/read is atomic). Requiring a lock here would mean taking GeoFixAddon's _lock in the hot-path request() hook on every single request — which is unnecessary and adds latency.",
+      "fix": "Clarify the guidance: 'Float assignment is atomic in CPython due to the GIL; no lock needed for _last_flow_time. Do NOT use _lock for this — that lock guards _preset and _js_payload, not timing state.'"
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "tasks": [2],
+      "issue": "Task 2's TDD Anchor places test_flowcleanup_ordering_after_geofixaddon in test/test_proxy_addon.py. But the tech-spec testing strategy lists the addon ordering test as: 'FlowCleanup addon ordering: verify FlowCleanup is added after GeoFixAddon in addon chain' — which is a test of main.py behavior, not proxy_addon.py behavior. Placing it in test_proxy_addon.py is awkward since that file tests the addon class in isolation; addon chain ordering is determined by main.py. Task 1's TDD Anchor places a related test in test/test_master_setup.py. The ordering test would fit better in test_master_setup.py.",
+      "fix": "Move test_flowcleanup_ordering_after_geofixaddon from test/test_proxy_addon.py to test/test_master_setup.py (the file Task 1 creates for master setup tests)."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "tasks": [5],
+      "issue": "Task 5 lists 5 new tests in the TDD Anchor but the Acceptance Criteria list 6 tests (including test_100_flows_no_memory_growth). The smoke check references 'python -m pytest test/ -x -v → all tests pass' but the count discrepancy (5 vs 6) could cause a task implementer to declare the task done with one test missing.",
+      "fix": "Align the TDD Anchor and Acceptance Criteria counts: add test_100_flows_no_memory_growth to the TDD Anchor bullet list."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 9,
+    "files_verified": 6,
+    "cross_task_pairs_checked": 12,
+    "issues_found": 13,
+    "by_severity": {
+      "critical": 4,
+      "major": 5,
+      "minor": 4
+    }
+  },
+  "file_modification_map": {
+    "src/main.py": {
+      "tasks": [1, 3],
+      "waves": [1, 2],
+      "conflict": false,
+      "note": "Task 1 (wave 1) and Task 3 (wave 2) both modify src/main.py. Wave ordering prevents simultaneous edits. Safe."
+    },
+    "src/proxy_addon.py": {
+      "tasks": [2, 3, 4],
+      "waves": [1, 2, 2],
+      "conflict": true,
+      "note": "Task 2 (wave 1) adds FlowCleanup class. Tasks 3 and 4 (both wave 2) both modify src/proxy_addon.py — Task 3 adds _last_flow_time to GeoFixAddon, Task 4 rewrites _find_inject_position. Tasks 3 and 4 are in the same wave and both edit proxy_addon.py. These edits are to different parts of the file (different classes/functions) but still represent a same-wave file modification conflict that requires coordination."
+    },
+    "src/presets.py": {
+      "tasks": [4],
+      "waves": [2],
+      "conflict": false,
+      "note": "Only Task 4 modifies presets.py. Clean."
+    },
+    "test/test_proxy_addon.py": {
+      "tasks": [2, 4],
+      "waves": [1, 2],
+      "conflict": false,
+      "note": "Task 2 adds FlowCleanup tests (wave 1), Task 4 adds _find_inject_position and is_target_domain tests (wave 2). Sequential — safe."
+    },
+    "test/test_master_setup.py": {
+      "tasks": [1],
+      "waves": [1],
+      "conflict": false,
+      "note": "New file, single task owner."
+    },
+    "test/test_ram_monitor.py": {
+      "tasks": [3],
+      "waves": [2],
+      "conflict": false,
+      "note": "New file, single task owner."
+    },
+    "test/test_integration_proxy.py": {
+      "tasks": [5],
+      "waves": [3],
+      "conflict": false,
+      "note": "New file, single task owner."
+    }
+  },
+  "wave_conflict_summary": {
+    "wave_1": {
+      "tasks": [1, 2],
+      "shared_files": ["src/main.py"],
+      "severity": "critical",
+      "note": "Tasks 1 and 2 both edit src/main.py (_start_mitmproxy addon chain). Despite being in the same wave, Task 2's main.py step explicitly requires Task 1 to have landed first. This is an undeclared dependency."
+    },
+    "wave_2": {
+      "tasks": [3, 4],
+      "shared_files": ["src/proxy_addon.py"],
+      "severity": "major",
+      "note": "Tasks 3 and 4 both modify src/proxy_addon.py in the same wave. Edits are to non-overlapping code regions (GeoFixAddon.request() vs _find_inject_position() and presets module). Parallel execution requires manual merge coordination."
+    }
+  }
+}
