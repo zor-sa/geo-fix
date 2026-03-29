@@ -42,11 +42,18 @@ class TestProxyStartsAndInjects:
                 asyncio.set_event_loop(loop)
 
                 from mitmproxy.options import Options
-                from mitmproxy.tools.dump import DumpMaster
+                from mitmproxy.master import Master
+                from mitmproxy.addons.core import Core
+                from mitmproxy.addons.proxyserver import Proxyserver
+                from mitmproxy.addons.next_layer import NextLayer
+                from mitmproxy.addons.tlsconfig import TlsConfig
 
                 opts = Options(listen_host="127.0.0.1", listen_port=18090)
-                master = DumpMaster(opts)
-                master.addons.add(GeoFixAddon(PRESETS["US"]))
+                master = Master(opts, event_loop=loop)
+                master.addons.add(
+                    Core(), Proxyserver(), NextLayer(), TlsConfig(),
+                    GeoFixAddon(PRESETS["US"])
+                )
                 proxy_ready.set()
                 loop.run_until_complete(master.run())
             except Exception as e:
@@ -126,9 +133,9 @@ class TestCACertificate:
             try:
                 loop = asyncio.new_event_loop()
                 from mitmproxy.options import Options
-                from mitmproxy.tools.dump import DumpMaster
+                from mitmproxy.master import Master
                 opts = Options(listen_host="127.0.0.1", listen_port=18091)
-                master = DumpMaster(opts)
+                master = Master(opts, event_loop=loop)
                 time.sleep(1)
                 master.shutdown()
             except Exception:
