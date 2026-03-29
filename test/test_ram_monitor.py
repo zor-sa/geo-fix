@@ -93,7 +93,8 @@ class TestShouldRestart:
         now = time.monotonic()
         should, reason = _should_restart(
             mem_mb=350.0, last_flow_time=now - 15,
-            last_restart_time=0.0, restart_timestamps=[], now=now
+            last_restart_time=now - 700,  # cooldown expired
+            restart_timestamps=[], now=now
         )
         assert should is True
 
