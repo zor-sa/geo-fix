@@ -71,13 +71,14 @@ TARGET_DOMAINS: List[str] = [
 ]
 
 
+_TARGET_DOMAINS_TUPLE = tuple(TARGET_DOMAINS)
+_TARGET_BARE_DOMAINS = frozenset(d.lstrip(".") for d in TARGET_DOMAINS)
+
+
 def is_target_domain(host: str) -> bool:
     """Check if a hostname matches any target domain pattern."""
     host = host.lower()
-    for domain in TARGET_DOMAINS:
-        if host.endswith(domain) or host == domain.lstrip("."):
-            return True
-    return False
+    return host.endswith(_TARGET_DOMAINS_TUPLE) or host in _TARGET_BARE_DOMAINS
 
 
 def get_preset(code: str) -> CountryPreset:

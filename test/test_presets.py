@@ -111,3 +111,27 @@ class TestGetPreset:
     def test_empty_code_raises(self):
         with pytest.raises(KeyError):
             get_preset("")
+
+
+class TestIsTargetDomainCPU:
+    """TDD anchor tests for CPU optimization of is_target_domain (task 4)."""
+
+    def test_tuple_endswith_multiple(self):
+        """Multiple Google subdomains all return True (validates tuple-based path)."""
+        subdomains = [
+            "www.google.com",
+            "maps.google.com",
+            "mail.google.com",
+            "drive.google.com",
+            "docs.google.com",
+        ]
+        for host in subdomains:
+            assert is_target_domain(host) is True, f"Expected True for {host}"
+
+    def test_bare_domain_still_matches(self):
+        """Bare domain without leading dot still matches (e.g. google.com)."""
+        assert is_target_domain("google.com") is True
+
+    def test_empty_string_returns_false(self):
+        """Empty string must return False without raising."""
+        assert is_target_domain("") is False

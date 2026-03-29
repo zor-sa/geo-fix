@@ -332,3 +332,27 @@ class TestFlowCleanup:
         assert geo_pos != -1, "GeoFixAddon not found in _start_mitmproxy"
         assert cleanup_pos != -1, "FlowCleanup not found in _start_mitmproxy"
         assert geo_pos < cleanup_pos, "FlowCleanup must be added after GeoFixAddon"
+
+
+class TestFindInjectPositionCPU:
+    """TDD anchor tests for CPU optimization of _find_inject_position (task 4)."""
+
+    def test_mixed_case_head(self):
+        """<Head> (mixed case) returns position right after closing >."""
+        html = "<html><Head><title>Test</title></Head></html>"
+        pos = _find_inject_position(html)
+        assert pos == len("<html><Head>")
+        assert html[pos - 1] == ">"
+
+    def test_uppercase_doctype(self):
+        """<!DOCTYPE html> uppercased returns position after > of doctype."""
+        html = "<!DOCTYPE html><body>content</body>"
+        pos = _find_inject_position(html)
+        assert pos == len("<!DOCTYPE html>")
+
+    def test_head_with_lang_attr(self):
+        """<head lang="en"> returns position after the closing >."""
+        html = '<html><head lang="en"><title>Test</title></head></html>'
+        pos = _find_inject_position(html)
+        assert html[pos - 1] == ">"
+        assert pos == len('<html><head lang="en">')

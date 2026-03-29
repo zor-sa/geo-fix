@@ -6,6 +6,7 @@ For target domains: injects JS payload with CSP nonce into HTML responses.
 
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -29,27 +30,26 @@ def _find_inject_position(html_text: str) -> int:
     """Find the best position to inject a script tag.
 
     Priority: after <head>, after <html>, after <!DOCTYPE>, or 0.
+    Uses re.search with IGNORECASE to avoid creating a full lowercase copy.
     """
-    lower = html_text.lower()
-
     # Try <head> first
-    idx = lower.find("<head")
-    if idx != -1:
-        close = html_text.find(">", idx)
+    m = re.search(r"<head[\s>]", html_text, re.IGNORECASE)
+    if m is not None:
+        close = html_text.find(">", m.start())
         if close != -1:
             return close + 1
 
     # Fallback: after <html>
-    idx = lower.find("<html")
-    if idx != -1:
-        close = html_text.find(">", idx)
+    m = re.search(r"<html[\s>]", html_text, re.IGNORECASE)
+    if m is not None:
+        close = html_text.find(">", m.start())
         if close != -1:
             return close + 1
 
     # Fallback: after <!DOCTYPE>
-    idx = lower.find("<!doctype")
-    if idx != -1:
-        close = html_text.find(">", idx)
+    m = re.search(r"<!doctype[\s>]", html_text, re.IGNORECASE)
+    if m is not None:
+        close = html_text.find(">", m.start())
         if close != -1:
             return close + 1
 
