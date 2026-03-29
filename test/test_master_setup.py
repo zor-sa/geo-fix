@@ -5,24 +5,39 @@ from unittest.mock import MagicMock, patch, call
 
 
 class TestMasterClassNotDumpMaster:
-    """Verify Master is used, not DumpMaster."""
+    """Verify Master is used at runtime, not DumpMaster."""
 
-    def test_master_class_not_dumpmaster(self):
-        """_start_mitmproxy must use mitmproxy.master.Master, not DumpMaster."""
+    @patch("src.main.time.sleep")
+    @patch("src.main.check_proxy_running", return_value=True)
+    def test_master_class_not_dumpmaster(self, mock_check, mock_sleep):
+        """_start_mitmproxy must instantiate mitmproxy.master.Master, not DumpMaster."""
+        mock_master_instance = MagicMock()
+        mock_master_instance.run = MagicMock()
+        mock_master_cls = MagicMock(return_value=mock_master_instance)
+
+        addon = MagicMock()
+
+        with patch("mitmproxy.master.Master", mock_master_cls) as patched_master, \
+             patch("mitmproxy.options.Options"):
+            from src.main import _start_mitmproxy
+            _start_mitmproxy(addon, port=19999)
+
+        # Master was called (instantiated)
+        patched_master.assert_called_once()
+
+        # DumpMaster must not be importable from src.main
         import src.main as main_mod
-        source = open(main_mod.__file__).read()
-        assert "from mitmproxy.master import Master" in source or \
-               "mitmproxy.master.Master" in source
-        assert "DumpMaster" not in source
+        assert not hasattr(main_mod, "DumpMaster")
 
 
 class TestEssentialAddonsPresent:
-    """Verify essential addons are added to master."""
+    """Verify essential addons are added to master in correct order."""
 
+    @patch("src.main.time.sleep")
     @patch("src.main.check_proxy_running", return_value=True)
-    def test_essential_addons_present(self, mock_check):
+    def test_essential_addons_present_and_ordered(self, mock_check, mock_sleep):
         """master.addons.add must receive Core, Proxyserver, NextLayer,
-        TlsConfig, KeepServing, ErrorCheck instances."""
+        TlsConfig, KeepServing, ErrorCheck instances in that order."""
         from mitmproxy.addons.core import Core
         from mitmproxy.addons.proxyserver import Proxyserver
         from mitmproxy.addons.next_layer import NextLayer
@@ -32,7 +47,6 @@ class TestEssentialAddonsPresent:
 
         mock_master_instance = MagicMock()
         mock_master_cls = MagicMock(return_value=mock_master_instance)
-        # Prevent actual proxy start
         mock_master_instance.run = MagicMock()
 
         addon = MagicMock()
@@ -40,7 +54,7 @@ class TestEssentialAddonsPresent:
         with patch("mitmproxy.master.Master", mock_master_cls), \
              patch("mitmproxy.options.Options"):
             from src.main import _start_mitmproxy
-            result = _start_mitmproxy(addon, port=19999)
+            _start_mitmproxy(addon, port=19999)
 
         # Collect all args passed to addons.add
         add_calls = mock_master_instance.addons.add.call_args_list
@@ -48,20 +62,27 @@ class TestEssentialAddonsPresent:
         for c in add_calls:
             all_addon_args.extend(c.args)
 
+        # Verify presence
         addon_types = {type(a) for a in all_addon_args}
         expected = {Core, Proxyserver, NextLayer, TlsConfig, KeepServing, ErrorCheck}
         assert expected.issubset(addon_types), \
             f"Missing addons: {expected - addon_types}"
 
+        # Verify order: essential addons must appear in spec order before GeoFixAddon
+        expected_order = [Core, Proxyserver, NextLayer, TlsConfig, KeepServing, ErrorCheck]
+        essential_args = [a for a in all_addon_args if type(a) in expected]
+        actual_order = [type(a) for a in essential_args]
+        assert actual_order == expected_order, \
+            f"Addon order mismatch: expected {expected_order}, got {actual_order}"
+
 
 class TestGeoFixAddonAddedAfterEssentials:
     """Verify GeoFixAddon is the last addon added."""
 
+    @patch("src.main.time.sleep")
     @patch("src.main.check_proxy_running", return_value=True)
-    def test_geofixaddon_added_after_essential_addons(self, mock_check):
+    def test_geofixaddon_added_after_essential_addons(self, mock_check, mock_sleep):
         """GeoFixAddon instance must be the last addon in the add() call."""
-        from mitmproxy.addons.core import Core
-
         mock_master_instance = MagicMock()
         mock_master_cls = MagicMock(return_value=mock_master_instance)
         mock_master_instance.run = MagicMock()
@@ -87,8 +108,9 @@ class TestGeoFixAddonAddedAfterEssentials:
 class TestNoDumperAddon:
     """Verify Dumper is not in the addon chain."""
 
+    @patch("src.main.time.sleep")
     @patch("src.main.check_proxy_running", return_value=True)
-    def test_no_dumper_addon(self, mock_check):
+    def test_no_dumper_addon(self, mock_check, mock_sleep):
         """No Dumper addon instance should be passed to master.addons.add()."""
         mock_master_instance = MagicMock()
         mock_master_cls = MagicMock(return_value=mock_master_instance)
@@ -114,8 +136,9 @@ class TestNoDumperAddon:
 class TestReturnsTuple:
     """Verify _start_mitmproxy returns (thread, master) tuple."""
 
+    @patch("src.main.time.sleep")
     @patch("src.main.check_proxy_running", return_value=True)
-    def test_returns_thread_and_master(self, mock_check):
+    def test_returns_thread_and_master(self, mock_check, mock_sleep):
         """_start_mitmproxy must return (thread, master) tuple."""
         import threading
 
