@@ -48,7 +48,12 @@ WebSocket lifecycle:
 
 RAM monitoring (in existing monitor thread):
   Every 60 seconds: check process Private Working Set
-  If > 300MB and cooldown elapsed: restart mitmproxy thread
+  If > 300MB AND cooldown elapsed AND idle guard passed: restart mitmproxy thread
+  Idle guard: GeoFixAddon tracks last flow timestamp (time.monotonic()).
+    Restart only if no flow activity for >10 seconds.
+    If traffic is active — skip restart, re-check on next 60-sec cycle.
+    This ensures: (a) no in-flight requests during restart,
+    (b) user is not actively browsing when connectivity gap occurs.
   Restart sequence:
     1. Shutdown old master (master.shutdown())
     2. Create new Master with same opts (confdir=session_tmpdir, same port)
@@ -105,6 +110,8 @@ RAM monitoring (in existing monitor thread):
 
 **Rationale:** Full restart would lose tray icon, watchdog connection, system proxy settings. Thread restart only interrupts proxy traffic for ~5 seconds. During the restart window, the system proxy still points at `127.0.0.1:PORT` — since the proxy is not listening, browsers receive `ERR_PROXY_CONNECTION_REFUSED` and **do not fall back to direct connections**. This means no requests leave the machine at all during restart — there is no location leak, just a brief connectivity gap. This is safe behavior: Chrome, Edge, and Firefox all refuse to bypass a configured system proxy when the proxy is unreachable.
 
+**Idle guard:** Restart only triggers when no flow has been processed for >10 seconds. GeoFixAddon tracks `_last_flow_time` via `time.monotonic()` in `request()` hook. The RAM monitor checks this before restarting. If traffic is active (flow within last 10 sec) — restart is deferred to the next 60-sec check cycle. This eliminates the "request on hold" problem: if there's no traffic, there are no pending requests to disrupt. Combined with the ~7 sec restart window during an idle period, the chance of a user-visible error is near zero.
+
 **Safety verification required:** Integration test must confirm that with system proxy set to a non-listening port, the browser does NOT send direct requests. If any browser is found to fall back to direct — this mechanism must be removed entirely.
 
 **CA certificate on restart:** The restart sequence must re-generate and re-install the CA certificate because the original CA key files were deleted from disk (security hardening). Sequence: shutdown old master → new Master generates new CA in confdir → `certutil -delstore` old CA → `certutil -addstore` new CA → delete new CA key files → update state with new thumbprint. This adds ~2 seconds to restart but preserves the CA key deletion security property.
@@ -159,6 +166,8 @@ None.
 - RAM monitor: test threshold detection with mocked memory readings
 - RAM monitor: test cooldown logic (no restart within 10 min of previous)
 - RAM monitor: test rate limiting (4th restart in 1 hour is suppressed, only logged)
+- RAM monitor: test idle guard (restart deferred when last flow < 10 sec ago)
+- RAM monitor: test idle guard (restart proceeds when last flow > 10 sec ago)
 - RAM monitor: test Linux `/proc/self/status` fallback path
 - GeoFixAddon state preservation: verify same addon instance reused after simulated restart retains preset
 - Minimal Master setup: verify required addons are loaded and proxy accepts connections
@@ -214,6 +223,7 @@ Technical acceptance criteria (supplement user-spec criteria):
 - [ ] FlowCleanup clears flow content after processing — flow.request.content and flow.response.content set to None/empty
 - [ ] WebSocket message history trimmed to <=1 message per connection
 - [ ] RAM monitoring triggers at 300MB Private Working Set with 10-min cooldown, max 3/hour
+- [ ] Proxy restart only occurs after 10+ seconds of no flow activity (idle guard)
 - [ ] Proxy restart reuses the same GeoFixAddon instance (preserves current preset and JS payload cache)
 - [ ] CA certificate re-generated, re-installed, and key deleted on proxy restart — HTTPS works after restart
 - [ ] During proxy restart, no HTTP requests leave the machine (browser gets connection refused, not direct fallback)
