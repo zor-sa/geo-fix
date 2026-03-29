@@ -175,3 +175,15 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 **Verification:**
 - Manual audit of src/main.py, src/proxy_addon.py, src/presets.py, src/system_config.py → OK
+
+## Task 8: Test Audit
+
+**Status:** Done
+**Commit:** 243d982
+**Agent:** auditor-test
+**Summary:** Full-feature test quality audit covering all three new components (FlowCleanup, RAM monitor, minimal Master) plus GeoFixAddon regression coverage. All 12 unit test requirements and 6 integration test requirements from tech-spec Testing Strategy are covered. 244 tests pass, 0 failures. No critical gaps found. Three non-critical gaps flagged for Task 9: browser-direct-fallback safety test (Decision 4), Windows ctypes memory path (not testable on Linux CI), full monitor loop integration. Known FlowCleanup production bug is regression-gated.
+**Deviations:** None.
+
+**Verification:**
+- `pytest test/ -x -v` → 244 passed, 13 skipped
+- Audit report → [logs/working/task-8/test-audit.md]
