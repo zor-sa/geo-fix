@@ -1,0 +1,66 @@
+{
+  "status": "failed",
+  "summary": "Critical production bug hidden by test design: FlowCleanup.response() clears flow.response.content before mitmproxy sends the response to the client, causing empty bodies for ALL HTTP traffic. test_http_request_proxied works around this by excluding FlowCleanup, meaning it tests a non-production config. Two major gaps: JS injection test bypasses the real proxy pipeline (FakeFlow, not local mock server as spec requires), and proxy restart test uses separate ports — not testing the actual same-port rebind path. Full production config (proxy + GeoFixAddon + FlowCleanup) is never exercised in any integration test.",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_coverage",
+      "location": "test/test_integration_proxy.py:TestOptimizedProxyHTTP::test_http_request_proxied",
+      "issue": "FlowCleanup is excluded from test_http_request_proxied because it clears flow.response.content in the response() hook before mitmproxy sends the response to the client — confirmed in src/proxy_addon.py:219 (flow.response.content = b\"\"). This means in production, ALL HTTP responses (both target and non-target domains) would arrive with empty bodies. The test works around this production bug instead of catching it. No integration test ever exercises the full production addon chain (GeoFixAddon + FlowCleanup together) through a real proxy pipeline.",
+      "recommendation": "This is a FlowCleanup design flaw — clearing content in the mitmproxy response() hook fires before the client receives the body. Fix FlowCleanup to defer cleanup post-send. Options: (1) Override responseheaders hook to stream=True and clear content after yielding; (2) Use flow.live to check if response is still in-flight; (3) Attach a weakref/callback to clear content after mitmproxy's internal send; (4) Clear only flow.request.content (already sent by this point) and accept that response.content GC is handled by flow going out of scope. Once fixed, test_http_request_proxied MUST include FlowCleanup and assert response body is non-empty: `assert len(body) > 0` with FlowCleanup in the addon chain."
+    },
+    {
+      "severity": "major",
+      "category": "wrong_test_type",
+      "location": "test/test_integration_proxy.py:TestJSInjection::test_js_injected_for_target_domain",
+      "issue": "Uses FakeFlow pattern (unit-level mock) instead of a real proxy pipeline. The task spec explicitly states: 'Use a local http.server.HTTPServer in a thread that serves a fake www.google.com-hosted HTML response. The proxy intercepts it, GeoFixAddon.response() runs, JS is injected. Prefer a real proxy pipeline for this integration test.' The justification given ('proxy sees 127.0.0.1 as host, not www.google.com') is a solvable problem: the local server can respond with the google.com HTML but Host header routing in mitmproxy can be controlled via the request's host field or by using a mock server on a routable port. FakeFlow bypasses NextLayer, TlsConfig, and all the proxy wiring — so this test does not verify that JS injection works through the optimized minimal-Master pipeline.",
+      "recommendation": "Implement with a local HTTPServer as the spec instructs. The trick: set up a local HTTP server, start the proxy, then use ProxyHandler to send a request to http://www.google.com/ but override DNS resolution by patching urllib or using a custom HTTPHandler that sends the request to 127.0.0.1:mock_port. Alternative: in the mock server's response handler, return HTML that the proxy will intercept — if GeoFixAddon.is_target_domain checks flow.request.host (not the socket address), you can send the request with `Host: www.google.com` header pointing to the local server. Assert `b'<script nonce=\"' in response.read()` from the proxied response body."
+    },
+    {
+      "severity": "major",
+      "category": "wrong_test_type",
+      "location": "test/test_integration_proxy.py:TestProxyRestart::test_tls_works_after_restart",
+      "issue": "Uses separate ports (port1, port2) for before/after restart — does not test the actual production restart path. The tech spec requires the restart sequence to rebind the same port: 'Create new Master with same opts (confdir=session_tmpdir, same port)'. The test comment acknowledges this: 'Uses separate ports for first/second instance to avoid TIME_WAIT.' This means the critical question — whether SO_REUSEADDR on the new Master allows rebinding while TIME_WAIT is active — is never verified. If the actual same-port rebind fails in production (e.g., on certain Windows TCP stack configurations), this test would not catch it.",
+      "recommendation": "Test should attempt same-port restart and verify it works within the expected time window. If TIME_WAIT is a real concern, add SO_REUSEADDR explicitly in the test or verify it is set in mitmproxy's Proxyserver addon. Use port1 for both instances and assert the second start succeeds: `assert _wait_for_port('127.0.0.1', port1, timeout=20)` after shutdown. If same-port rebind genuinely cannot work in test environment, document this as a known limitation and add a separate test that verifies SO_REUSEADDR is set on the proxy socket."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "test/test_integration_proxy.py:TestFlowCleanup::test_100_flows_no_memory_growth",
+      "issue": "The tech spec integration test requirement states: 'process 100 flows, verify no flow objects retained (assert flow count == 0)'. This test does the opposite — it retains all 100 flow objects in a list (`flows.append(flow)`) and only checks that content fields are empty. It does not test flow retention at all. In the optimized proxy with minimal Master, the View addon is not loaded, so flows should not be accumulated anywhere. The test should verify that FlowCleanup (or the minimal Master) does not retain flow references after processing.",
+      "recommendation": "Use weakrefs to verify flows are collected after processing: `import weakref; refs = []; for i in range(100): flow = make_flow(); cleanup.response(flow); refs.append(weakref.ref(flow)); del flow`. After the loop, call `gc.collect()` and assert `sum(1 for r in refs if r() is not None) == 0`. This verifies actual memory release, not just content clearing. Keep the existing content assertions as a separate test (`test_flow_content_cleared_for_100_flows`)."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "test/conftest.py:get_free_port / test/test_integration_proxy.py:_free_port",
+      "issue": "get_free_port() has a TOCTOU (time-of-check-time-of-use) race: the OS-assigned port is released when the socket closes, then passed to the proxy which binds it. Between release and bind, another process can claim the port. This can cause intermittent test failures in CI environments with high port churn. The existing pattern in test_integration_windows.py uses hardcoded ports (18090, 18091) to avoid this — the new tests traded one problem (collisions) for another (races).",
+      "recommendation": "Bind the port and keep the socket open with SO_REUSEADDR, pass the port to the proxy, then close the socket just before proxy.listen() is called. Or use the approach from test_integration_windows.py: hardcode a port range above 18092 (e.g., 18093-18097) reserved for test_integration_proxy.py tests, documented in a comment. This eliminates the race entirely."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "test/test_integration_proxy.py:TestJSInjection:FakeHeaders",
+      "issue": "FakeHeaders is a dict subclass that overrides get() and __contains__() to do case-insensitive lookup. This reimplements logic already present in mitmproxy's native Headers class. If GeoFixAddon is updated to use Headers methods not covered by FakeHeaders (e.g., iteration, items(), or case-folded keys), the mock silently diverges from production behavior.",
+      "recommendation": "Use mitmproxy's native `mitmproxy.net.http.headers.Headers` or `mitmproxy.http.Headers` in FakeFlow/FakeRequest/FakeResponse — the same type that production code receives. This ensures any header access pattern used in GeoFixAddon is correctly replicated in tests."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 6,
+      "passed": 6,
+      "failed": 0,
+      "note": "All 6 TDD anchor tests contain assertions that would fail if the asserted condition is removed. However, the critical finding is not about individual assertion quality but about test configuration: test_http_request_proxied excludes FlowCleanup and therefore tests a non-production addon chain."
+    },
+    "coverageAssessment": "insufficient",
+    "pyramidBalance": {
+      "unit": 0,
+      "integration": 3,
+      "e2e": 0,
+      "unit_in_integration_file": 3,
+      "note": "TestFlowCleanup and TestJSInjection (3 tests) use FakeFlow — these are unit-level tests placed in the integration file. TestOptimizedProxyHTTP, TestOptimizedProxyHTTPS, TestProxyRestart (3 tests) use a real proxy — these are true integration tests. The split is acknowledged but the unit-in-integration-file tests bypass the proxy pipeline for scenarios that require it.",
+      "assessment": "unbalanced"
+    }
+  }
+}
