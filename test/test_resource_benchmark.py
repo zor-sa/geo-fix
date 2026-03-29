@@ -63,9 +63,18 @@ def _get_process_rss_mb() -> float:
 
             kernel32 = ctypes.windll.kernel32
             psapi = ctypes.windll.psapi
+            # SetUp proper types for GetCurrentProcess
+            kernel32.GetCurrentProcess.restype = ctypes.wintypes.HANDLE
             handle = kernel32.GetCurrentProcess()
             counters = PROCESS_MEMORY_COUNTERS_EX()
             counters.cb = ctypes.sizeof(counters)
+            # SetUp proper types for GetProcessMemoryInfo
+            psapi.GetProcessMemoryInfo.restype = ctypes.wintypes.BOOL
+            psapi.GetProcessMemoryInfo.argtypes = [
+                ctypes.wintypes.HANDLE,
+                ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX),
+                ctypes.wintypes.DWORD,
+            ]
             if psapi.GetProcessMemoryInfo(
                 handle, ctypes.byref(counters), counters.cb
             ):
@@ -100,6 +109,15 @@ def _get_cpu_times() -> tuple[float, float]:
                 ]
 
             kernel32 = ctypes.windll.kernel32
+            kernel32.GetCurrentProcess.restype = ctypes.wintypes.HANDLE
+            kernel32.GetProcessTimes.restype = ctypes.wintypes.BOOL
+            kernel32.GetProcessTimes.argtypes = [
+                ctypes.wintypes.HANDLE,
+                ctypes.POINTER(FILETIME),
+                ctypes.POINTER(FILETIME),
+                ctypes.POINTER(FILETIME),
+                ctypes.POINTER(FILETIME),
+            ]
             creation = FILETIME()
             exit_t = FILETIME()
             kernel = FILETIME()
