@@ -1,10 +1,22 @@
 """Tests for system configuration module."""
 
 import json
+import subprocess
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from src.system_config import ProxyState, delete_state, load_state, save_state
+from src.system_config import (
+    BROWSER_EXES,
+    FW_RULE_PREFIX,
+    STUN_PORTS,
+    ProxyState,
+    _list_firewall_rules_by_prefix,
+    delete_state,
+    load_state,
+    remove_firewall_rules,
+    save_state,
+)
 
 
 class TestProxyState:
@@ -75,3 +87,87 @@ class TestStateFile:
         # Temp file should not exist after atomic rename
         assert not (state_file.with_suffix(".tmp")).exists()
         assert state_file.exists()
+
+
+# === Firewall prefix cleanup tests ===
+
+NETSH_OUTPUT = """\
+Rule Name:                            geo-fix-webrtc-chrome-udp-3478
+----------------------------------------------------------------------
+Enabled:                              Yes
+Direction:                            Out
+
+Rule Name:                            geo-fix-webrtc-msedge-udp-5349
+----------------------------------------------------------------------
+Enabled:                              Yes
+Direction:                            Out
+
+Rule Name:                            unrelated-other-rule
+----------------------------------------------------------------------
+Enabled:                              Yes
+Direction:                            Out
+"""
+
+
+class TestFirewallPrefixCleanup:
+    def test_list_rules_parses_netsh_output(self):
+        """_list_firewall_rules_by_prefix parses netsh output and filters by prefix."""
+        mock_result = MagicMock()
+        mock_result.stdout = NETSH_OUTPUT
+
+        with patch("src.system_config.subprocess.run", return_value=mock_result) as mock_run:
+            rules = _list_firewall_rules_by_prefix("geo-fix-webrtc")
+
+        mock_run.assert_called_once_with(
+            ["netsh", "advfirewall", "firewall", "show", "rule", "name=all"],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert rules == [
+            "geo-fix-webrtc-chrome-udp-3478",
+            "geo-fix-webrtc-msedge-udp-5349",
+        ]
+        # "unrelated-other-rule" must be excluded
+        assert "unrelated-other-rule" not in rules
+
+    @patch("src.system_config.sys.platform", "win32")
+    @patch("src.system_config._list_firewall_rules_by_prefix")
+    @patch("src.system_config.subprocess.run")
+    def test_remove_by_prefix_deletes_found_rules(self, mock_run, mock_list):
+        """remove_firewall_rules deletes each rule found by prefix query."""
+        mock_list.return_value = [
+            "geo-fix-webrtc-chrome-udp-3478",
+            "geo-fix-webrtc-msedge-udp-5349",
+        ]
+
+        remove_firewall_rules()
+
+        mock_list.assert_called_once_with(FW_RULE_PREFIX)
+        assert mock_run.call_count == 2
+        mock_run.assert_any_call(
+            ["netsh", "advfirewall", "firewall", "delete", "rule",
+             "name=geo-fix-webrtc-chrome-udp-3478"],
+            capture_output=True, text=True, timeout=10,
+        )
+        mock_run.assert_any_call(
+            ["netsh", "advfirewall", "firewall", "delete", "rule",
+             "name=geo-fix-webrtc-msedge-udp-5349"],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    @patch("src.system_config.sys.platform", "win32")
+    @patch("src.system_config._list_firewall_rules_by_prefix", return_value=[])
+    @patch("src.system_config.subprocess.run")
+    def test_remove_by_prefix_fallback_on_parse_error(self, mock_run, mock_list):
+        """When prefix query returns empty, remove_firewall_rules falls back to fixed list."""
+        remove_firewall_rules()
+
+        # Should attempt to delete known fixed-list rule names
+        delete_calls = mock_run.call_args_list
+        assert len(delete_calls) == len(BROWSER_EXES) * len(STUN_PORTS)
+
+        # Verify at least one known fixed-name rule is in the calls
+        expected_name = f"{FW_RULE_PREFIX}-chrome-udp-3478"
+        assert any(
+            f"name={expected_name}" in str(c)
+            for c in delete_calls
+        )
