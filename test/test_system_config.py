@@ -1,8 +1,7 @@
 """Tests for system configuration module."""
 
 import json
-import subprocess
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -165,9 +164,10 @@ class TestFirewallPrefixCleanup:
         delete_calls = mock_run.call_args_list
         assert len(delete_calls) == len(BROWSER_EXES) * len(STUN_PORTS)
 
-        # Verify at least one known fixed-name rule is in the calls
+        # Verify a known fixed-name rule is in the calls via structured args
         expected_name = f"{FW_RULE_PREFIX}-chrome-udp-3478"
-        assert any(
-            f"name={expected_name}" in str(c)
-            for c in delete_calls
+        mock_run.assert_any_call(
+            ["netsh", "advfirewall", "firewall", "delete", "rule",
+             f"name={expected_name}"],
+            capture_output=True, text=True, timeout=10,
         )
