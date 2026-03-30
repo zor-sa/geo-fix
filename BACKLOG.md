@@ -34,3 +34,38 @@
 **Full protection requires elevation:** Only an admin-level process is protected from memory dumps by user-level processes. Delete-after-load closes the disk vector but not the memory vector. Both approaches can be combined: elevation + delete-after-load = maximum protection.
 
 **Decision:** Do not start without explicit user approval. If approved, evaluate both approaches (elevation vs delete-after-load) in a tech-spec.
+
+---
+
+### WiFi geolocation leak — роутер MAC-адрес раскрывает реальное местоположение
+
+**Status:** ready — можно брать в работу
+**Source:** user report, 2026-03-30
+**Related:** inject.js (navigator.geolocation override), system_config.py
+
+**Problem:** Google и другие сервисы имеют базы данных MAC-адресов WiFi точек доступа. Когда браузер или десктопное приложение запрашивает геолокацию:
+
+1. `navigator.geolocation.getCurrentPosition()` → браузер вызывает Windows Location Services
+2. Windows сканирует ближайшие WiFi точки доступа
+3. MAC-адреса отправляются в Google Location Service (или Microsoft Location Service)
+4. Сервис возвращает координаты, вычисленные по базе MAC-адресов
+5. Роутер пользователя по своему MAC-адресу может быть идентифицирован как находящийся в России — **независимо от VPN/IP**
+
+Два вектора утечки:
+- **Браузер:** `navigator.geolocation` → geo-fix уже перехватывает через inject.js, но только для target domains. Нетаргетные домены или расширения могут получить реальные координаты.
+- **Десктопное приложение:** обращается к Windows Location Services напрямую, минуя браузер и прокси. geo-fix не контролирует этот канал.
+
+**Scope исследования:**
+1. Проверить: inject.js действительно блокирует реальный geolocation на target domains? Или просто добавляет fake coords, а реальные всё равно утекают в запросе к Google?
+2. Изучить: можно ли отключить Windows Location Services / WiFi scanning на уровне системы (реестр, GPO, netsh wlan)?
+3. Изучить: можно ли рандомизировать MAC роутера (настройка роутера, не geo-fix)?
+4. Оценить: нужно ли расширять inject.js на все домены (не только target)?
+5. Оценить: нужно ли блокировать запросы к `*.googleapis.com/geolocation/*` на уровне прокси?
+
+**Mitigation options (предварительные):**
+- Блокировать/подменять запросы к Google Geolocation API (`https://www.googleapis.com/geolocation/v1/geolocate`) на уровне прокси
+- Отключить Windows Location Service через реестр (`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager`)
+- Расширить navigator.geolocation override на все домены
+- Документировать для пользователя: рандомизация MAC на роутере
+
+**Decision:** Требуется code-research для оценки текущего покрытия и выбора подхода.
