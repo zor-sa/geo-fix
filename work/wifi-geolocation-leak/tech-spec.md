@@ -1,6 +1,6 @@
 ---
 created: 2026-03-30
-status: draft
+status: approved
 size: M
 branch: feature/wifi-geolocation-leak
 ---
