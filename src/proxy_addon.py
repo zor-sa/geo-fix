@@ -185,7 +185,7 @@ def _modify_csp(csp_value: str, nonce: str) -> str:
     return "; ".join(new_directives)
 
 
-def _inject_script(flow: http.HTTPFlow, html_text: str, inject_pos: int, payload: str) -> None:
+def _inject_script(flow: http.HTTPFlow, html_text: str, inject_pos: int, payload: str) -> str:
     """Inject a script tag with a fresh nonce into the HTML and update CSP if present.
 
     Modifies flow.response.text in-place (via the mitmproxy setter).
@@ -241,6 +241,7 @@ class GeoFixAddon:
                 accuracy = random.randint(40, 80)
                 body = json.dumps({"location": {"lat": lat, "lng": lon}, "accuracy": accuracy})
                 flow.response = http.Response.make(200, body.encode(), {"Content-Type": "application/json"})
+                flow.request.headers["Accept-Language"] = accept_lang
                 logger.info("Intercepted geolocation API request → fake response (accuracy=%d)", accuracy)
                 return
             except Exception as e:

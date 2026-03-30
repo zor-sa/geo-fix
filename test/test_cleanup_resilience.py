@@ -13,6 +13,7 @@ from src.system_config import (
     CLEANUP_LABEL_PROXY,
     CLEANUP_LABEL_FIREFOX,
     CLEANUP_LABEL_FIREWALL,
+    CLEANUP_LABEL_LOCATION_SERVICES,
     _CLEANUP_RETRY_DELAY,
 )
 
@@ -34,6 +35,7 @@ def mock_state():
     state.original_proxy_override = ""
     state.firefox_prefs_modified = True
     state.firefox_prefs_backup = "/tmp/backup.js"
+    state.original_location_services = "Allow"
     return state
 
 
@@ -248,3 +250,60 @@ class TestDoCleanupNotifiesUser:
 
         mock_write_pending.assert_not_called()
         mock_del_pending.assert_called_once()
+
+
+class TestCleanupLocationServicesResilience:
+    """Location Services cleanup label participates in retry/pending pattern."""
+
+    @patch("src.system_config.time.sleep")
+    @patch("src.system_config.delete_state")
+    @patch("src.system_config.restore_location_services")
+    @patch("src.system_config.remove_firewall_rules")
+    @patch("src.system_config.unset_firefox_proxy")
+    @patch("src.system_config.unset_wininet_proxy")
+    @patch("src.system_config.delete_session_tmpdir")
+    @patch("src.system_config.uninstall_ca_cert")
+    def test_cleanup_retries_location_services_on_failure(
+        self, mock_ca, mock_tmpdir, mock_proxy, mock_firefox,
+        mock_firewall, mock_restore_loc, mock_del_state, mock_sleep, mock_state
+    ):
+        """Location Services restore retries once on failure, then reports as failed."""
+        mock_restore_loc.side_effect = [OSError("registry locked"), OSError("still locked")]
+
+        from src.system_config import cleanup
+        failures = cleanup(mock_state)
+
+        assert mock_restore_loc.call_count == 2
+        assert CLEANUP_LABEL_LOCATION_SERVICES in failures
+
+    @patch("src.system_config.time.sleep")
+    @patch("src.system_config.delete_state")
+    @patch("src.system_config.restore_location_services")
+    @patch("src.system_config.remove_firewall_rules")
+    @patch("src.system_config.unset_firefox_proxy")
+    @patch("src.system_config.unset_wininet_proxy")
+    @patch("src.system_config.delete_session_tmpdir")
+    @patch("src.system_config.uninstall_ca_cert")
+    def test_cleanup_location_services_success_not_in_failures(
+        self, mock_ca, mock_tmpdir, mock_proxy, mock_firefox,
+        mock_firewall, mock_restore_loc, mock_del_state, mock_sleep, mock_state
+    ):
+        """Successful Location Services restore does not appear in failures list."""
+        from src.system_config import cleanup
+        failures = cleanup(mock_state)
+
+        mock_restore_loc.assert_called_once_with(mock_state.original_location_services)
+        assert CLEANUP_LABEL_LOCATION_SERVICES not in failures
+
+    @patch("src.system_config.restore_location_services")
+    def test_pending_cleanup_dispatches_location_services(self, mock_restore, tmp_path):
+        """check_pending_cleanup dispatches Location Services label correctly."""
+        pending_file = tmp_path / "geo-fix" / "cleanup_pending.json"
+        pending_file.parent.mkdir(parents=True, exist_ok=True)
+        pending_file.write_text(json.dumps([CLEANUP_LABEL_LOCATION_SERVICES]))
+
+        with patch("src.system_config.CLEANUP_PENDING_FILE", pending_file):
+            from src.system_config import check_pending_cleanup
+            check_pending_cleanup()
+
+        mock_restore.assert_called_once_with(original=None)

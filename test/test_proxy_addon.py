@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, PropertyMock
 import pytest
 
 from src.presets import PRESETS, CountryPreset
-from src.proxy_addon import GeoFixAddon, FlowCleanup, _find_inject_position, _build_js_payload, _generate_nonce, _modify_csp, _has_restrictive_csp
+from src.proxy_addon import GeoFixAddon, FlowCleanup, _find_inject_position, _build_js_payload, _build_geo_only_payload, _generate_nonce, _modify_csp, _has_restrictive_csp
 
 
 class TestFindInjectPosition:
@@ -535,3 +535,52 @@ class TestAcceptLanguageAllDomains:
         flow = make_flow(host="www.google.com")
         addon.request(flow)
         assert flow.request.headers["Accept-Language"] == "en-US,en;q=0.9"
+
+
+class TestGeoOnlyPayloadContent:
+    """Verify geo-only payload contains geolocation + permissions overrides, not other overrides."""
+
+    def test_geo_only_payload_contains_geolocation_override(self):
+        preset = PRESETS["US"]
+        payload = _build_geo_only_payload(preset)
+        assert "getCurrentPosition" in payload
+        assert "watchPosition" in payload
+        assert "clearWatch" in payload
+
+    def test_geo_only_payload_contains_permissions_query_override(self):
+        preset = PRESETS["US"]
+        payload = _build_geo_only_payload(preset)
+        assert "permissions" in payload
+        assert "geolocation" in payload
+        assert "granted" in payload
+
+    def test_geo_only_payload_scopes_permissions_to_geolocation(self):
+        """permissions.query override must check name === 'geolocation' before returning granted."""
+        preset = PRESETS["US"]
+        payload = _build_geo_only_payload(preset)
+        # The guard must exist: only geolocation gets the fake response
+        assert "name" in payload
+        assert "'geolocation'" in payload or '"geolocation"' in payload
+
+    def test_geo_only_payload_excludes_timezone(self):
+        preset = PRESETS["US"]
+        payload = _build_geo_only_payload(preset)
+        assert "getTimezoneOffset" not in payload
+        assert "DateTimeFormat" not in payload
+
+    def test_geo_only_payload_excludes_language(self):
+        preset = PRESETS["US"]
+        payload = _build_geo_only_payload(preset)
+        assert "navigator.language" not in payload
+        assert "GF_LANG" not in payload
+
+    def test_geo_only_payload_excludes_webrtc(self):
+        preset = PRESETS["US"]
+        payload = _build_geo_only_payload(preset)
+        assert "RTCPeerConnection" not in payload
+
+    def test_geo_only_payload_contains_preset_coordinates(self):
+        preset = PRESETS["US"]
+        payload = _build_geo_only_payload(preset)
+        assert str(preset.latitude) in payload
+        assert str(preset.longitude) in payload
