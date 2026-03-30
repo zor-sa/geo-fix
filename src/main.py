@@ -37,6 +37,7 @@ from src.health_check import (
 from src.system_config import (
     PROXY_HOST,
     PROXY_PORT,
+    STATE_FILE,
     ProxyState,
     cleanup,
     create_firewall_rules,
@@ -466,19 +467,20 @@ def _monitor_tick(last_vpn):
         elif vpn == VpnStatus.DETECTED and last_vpn == VpnStatus.NOT_DETECTED:
             logger.info("VPN reconnected")
             print("✓ VPN восстановлен.", file=sys.stderr)
-        last_vpn = vpn
+        if vpn != VpnStatus.UNKNOWN:
+            last_vpn = vpn
     except Exception as e:
-        logger.debug("VPN check error: %s", e)
-    # Check watchdog health
-    if _watchdog_proc and _watchdog_proc.poll() is not None:
-        logger.warning("Watchdog died (rc=%s), respawning...", _watchdog_proc.returncode)
-        try:
-            from src.system_config import STATE_FILE
-            _watchdog_proc = _spawn_watchdog(
-                os.getpid(), str(STATE_FILE), _session_tmpdir, _session_id, _stop_token
-            )
-        except Exception as e:
-            logger.error("Failed to respawn watchdog: %s", e)
+        logger.warning("VPN check error: %s", e)
+    # Check watchdog health (under lock to avoid race with _do_cleanup)
+    with _cleanup_lock:
+        if _watchdog_proc and _watchdog_proc.poll() is not None:
+            logger.warning("Watchdog died (rc=%s), respawning...", _watchdog_proc.returncode)
+            try:
+                _watchdog_proc = _spawn_watchdog(
+                    os.getpid(), str(STATE_FILE), _session_tmpdir, _session_id, _stop_token
+                )
+            except Exception as e:
+                logger.error("Failed to respawn watchdog: %s", e)
     return last_vpn
 
 
