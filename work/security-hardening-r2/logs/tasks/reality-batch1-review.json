@@ -1,0 +1,68 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3, 4],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 2,
+      "issue": "Task 2 instructs adding a tray toast notification in _do_cleanup() via tray.notify(message), but GeoFixTray in src/tray.py has no notify() method. The class only exposes start_threaded(), stop(), update_preset(), and internal menu helpers. Calling tray.notify() will raise AttributeError at runtime.",
+      "fix": "Either add a notify() method to GeoFixTray (using pystray's notification API or a simple message box), or replace the tray toast requirement with a stderr-only notification in _do_cleanup(). Task 2 also references 'tray.set_warning_icon()' indirectly through the tech-spec D-3 scope — confirm that is out of scope for Task 2 and only in Task 3 (which correctly defers it)."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 4,
+      "issue": "Task 4's TDD Anchor, Details section, and Verification Steps all reference 'tests/test_system_config.py' (plural 'tests'), but the actual test directory is 'test/' (singular). The file 'test/test_system_config.py' already exists. The incorrect path 'tests/test_system_config.py' will cause pytest to not find the file and CI to fail.",
+      "fix": "Replace all occurrences of 'tests/test_system_config.py' with 'test/test_system_config.py' in task 4. Specifically: TDD Anchor (3 test references), Details section heading 'tests/test_system_config.py', and Verification Steps pytest command."
+    },
+    {
+      "severity": "major",
+      "category": "missing_function",
+      "task": 2,
+      "issue": "Task 2 instructs adding a module-level '_tray = None' reference in main.py and assigning it when the tray is created in main(). However, _do_cleanup() is called by atexit and signal handlers, which can fire before the tray is created (e.g., crash during VPN check or setup wizard). The task does mention guarding with 'if _tray is not None', but the _tray global and its assignment site are not described concretely — there is no 'tray = GeoFixTray(...)' call that can be easily identified for the assignment. The developer needs to add '_tray = tray' at exactly line 586 (after 'tray = GeoFixTray(preset, on_switch_country, on_stop)'). This is feasible but the hint is vague about the exact insertion point.",
+      "fix": "Clarify in task 2 Details that the assignment '_tray = tray' goes on the line immediately after 'tray = GeoFixTray(preset, on_switch_country, on_stop)' at src/main.py line 586."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Task 2 claims cleanup() currently 'returns failures at line 720 inconsistently (no return type annotation)'. The actual code at line 720 is 'return failures' — the return IS consistent and present. The function signature is 'def cleanup(state: Optional[ProxyState] = None) -> None:' at line 653, so the return type annotation says None but the function returns a list. The task is correct that the annotation is wrong, but the description 'returns implicitly' is inaccurate — it does return explicitly. This is a minor mismatch in the task description but could confuse the implementer about the current state.",
+      "fix": "Update task 2 Details to say: 'cleanup() at line 653 has return type annotation -> None but actually executes return failures at line 720. Change annotation to -> list[str].' Remove the phrase 'returns implicitly'."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 2,
+      "issue": "Task 2 Details section for check_pending_cleanup() states: 'it can call individual sub-functions rather than the full stateless_cleanup() to target only what failed'. However, stateless_cleanup() in system_config.py (line 595) does not call the same sub-functions as cleanup() — it uses different logic (e.g., it checks proxy by inspecting registry values, not using state). The sub-functions that cleanup() calls (uninstall_ca_cert, delete_session_tmpdir, unset_wininet_proxy, unset_firefox_proxy, remove_firewall_rules) are all defined individually in system_config.py and can be called directly. This is technically feasible but the hint about 'stateless/best-effort variants' is misleading — uninstall_ca_cert already accepts thumbprint=None for stateless operation, so calling it directly is correct. The confusion is the reference to 'variants' that don't exist.",
+      "fix": "Clarify hint to say: call the same underlying functions directly (e.g., uninstall_ca_cert(thumbprint=None), remove_firewall_rules(), etc.) matching the label strings. Remove the phrase 'stateless/best-effort variants'."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_file",
+      "task": 1,
+      "issue": "test/test_ca_key_deletion.py already exists in the test/ directory (found via ls). Task 1 does not mention this file or instruct the implementer to check it for overlap. New tests in test/unit/test_delete_ca_key_files.py may duplicate or conflict with existing tests in test_ca_key_deletion.py.",
+      "fix": "Add a step in task 1: 'Before writing new tests, read test/test_ca_key_deletion.py to identify any existing coverage and avoid duplication.'"
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 3,
+      "issue": "Task 3 TDD Anchor lists test_watchdog_respawn_on_death as needing to assert '_spawn_watchdog called once', but _spawn_watchdog is a module-level function inside main.py (not imported separately). Patching it requires 'unittest.mock.patch(\"src.main._spawn_watchdog\")'. The task hints section mentions monkeypatch/patch but does not specify the exact patch target path, which is non-obvious for a nested function in a module with a closure-based _monitor_loop.",
+      "fix": "Add to task 3 Details: '_spawn_watchdog patch target is src.main._spawn_watchdog. Note: _monitor_loop is defined as a local function inside main(), so tests should either refactor it to module level or test through globals() mutation. Consider extracting _monitor_loop to module level to simplify testing.'"
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 3,
+      "issue": "_monitor_loop is defined as a nested function (closure) inside main() at line 593. This makes unit testing it via direct import impossible without refactoring. The task says 'tests should exercise the monitor logic by calling a stripped-down version of _monitor_loop or by directly testing the branching logic with mocks' but does not acknowledge that the function is inaccessible from outside main(). The testing approach requires either refactoring or indirectly invoking it via threading.",
+      "fix": "Task 3 should explicitly state: '_monitor_loop is currently a closure inside main(). To make it unit-testable, extract it to module level (add _watchdog_proc, session_id, stop_token, session_tmpdir, addon, port, state as parameters or rely on module globals). This refactor should be done as part of this task before writing tests.'"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 4,
+    "claims_verified": 38,
+    "issues_found": 8
+  }
+}
