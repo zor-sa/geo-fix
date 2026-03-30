@@ -1,0 +1,42 @@
+{
+  "status": "needs_improvement",
+  "summary": "Unit tests are solid — real filesystem, no mocks, all TDD anchors covered, litmus test passes for all 7 unit tests. Integration test correctly starts a real mitmproxy and verifies CONNECT after key deletion. Two issues: (1) missing platform skip marker that the task verification steps explicitly require, (2) fragile private-attribute access in shutdown helper.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "wrong_test_type",
+      "location": "test/test_integration_ca_key_deletion.py:115",
+      "issue": "Integration test lacks @pytest.mark.skipif(sys.platform != 'win32', ...) marker. Task verification steps explicitly state: 'passes on Windows, skipped on Linux'. Without the marker, the test runs on Linux CI where mitmproxy behaviour or port binding may differ, producing unexpected results rather than a clean skip.",
+      "recommendation": "Add to the test class or test method:\n  @pytest.mark.skipif(sys.platform != 'win32', reason='Integration test targets Windows CI environment')\nAlternatively, if the test is confirmed to pass on Linux, update the verification steps in the task to reflect that — but the explicit 'skipped on Linux' requirement must be addressed either way."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "test/test_integration_ca_key_deletion.py:95-103",
+      "issue": "_shutdown_proxy accesses mitmproxy private internals: addon.servers._instances. Private attributes are not part of the public API and may be renamed or removed in any mitmproxy patch release, making the shutdown logic fragile.",
+      "recommendation": "Replace the server-stop loop with a simpler approach: call master.shutdown() directly and rely on thread.join(timeout=10). The daemon=True flag on the thread already prevents it from blocking process exit. The complex _instances teardown adds fragility without meaningful benefit in a test context."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "test/test_integration_ca_key_deletion.py:138-155",
+      "issue": "Integration test verifies CONNECT tunnel acceptance (HTTP 200) but does not verify TLS interception — the operation that actually exercises the in-memory private key. A proxy with a completely broken TLS stack could still return 200 to CONNECT.",
+      "recommendation": "After the CONNECT 200 is received, upgrade the socket to TLS using ssl.wrap_socket() (or ssl.SSLContext) and perform a minimal TLS handshake. A successful handshake proves the in-memory key is functional. This is the strongest evidence for the K-1 fix. If full TLS is too complex, document why CONNECT-only is sufficient in the test docstring."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 8,
+      "passed": 8,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 7,
+      "integration": 1,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}
