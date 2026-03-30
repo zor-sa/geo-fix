@@ -627,8 +627,8 @@ def disable_location_services() -> Optional[str]:
 
     original: Optional[str] = None
     try:
-        with winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE,
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER,
             _LOCATION_KEY_PATH,
             0,
             winreg.KEY_READ | winreg.KEY_SET_VALUE,
@@ -670,7 +670,7 @@ def restore_location_services(original: Optional[str]) -> None:
 
     try:
         with winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE,
+            winreg.HKEY_CURRENT_USER,
             _LOCATION_KEY_PATH,
             0,
             winreg.KEY_SET_VALUE,

@@ -17,7 +17,7 @@ class TestDisableLocationServices:
     def _make_winreg(self, query_value="Allow"):
         """Build a mock winreg module."""
         winreg = MagicMock()
-        winreg.HKEY_LOCAL_MACHINE = 0x80000002
+        winreg.HKEY_CURRENT_USER = 0x80000001
         winreg.KEY_READ = 0x20019
         winreg.KEY_SET_VALUE = 0x0002
         winreg.REG_SZ = 1
@@ -25,7 +25,7 @@ class TestDisableLocationServices:
         mock_key = MagicMock()
         mock_key.__enter__ = MagicMock(return_value=mock_key)
         mock_key.__exit__ = MagicMock(return_value=False)
-        winreg.OpenKey.return_value = mock_key
+        winreg.CreateKeyEx.return_value = mock_key
 
         if isinstance(query_value, Exception):
             winreg.QueryValueEx.side_effect = query_value
@@ -52,6 +52,10 @@ class TestDisableLocationServices:
         assert call_order.index("query") < call_order.index("set"), (
             "QueryValueEx must precede SetValueEx"
         )
+        hive_arg = winreg.CreateKeyEx.call_args[0][0]
+        assert hive_arg == winreg.HKEY_CURRENT_USER, (
+            "CreateKeyEx must use HKEY_CURRENT_USER"
+        )
 
     def test_disable_returns_original_allow(self):
         """When registry has 'Allow', returns 'Allow' and writes 'Deny'."""
@@ -67,6 +71,10 @@ class TestDisableLocationServices:
         winreg.SetValueEx.assert_called_once()
         args = winreg.SetValueEx.call_args[0]
         assert args[-1] == "Deny"
+        hive_arg = winreg.CreateKeyEx.call_args[0][0]
+        assert hive_arg == winreg.HKEY_CURRENT_USER, (
+            "CreateKeyEx must use HKEY_CURRENT_USER"
+        )
 
     def test_disable_key_not_found_returns_none(self):
         """When QueryValueEx raises FileNotFoundError, returns None but still writes 'Deny'."""
@@ -82,16 +90,20 @@ class TestDisableLocationServices:
         winreg.SetValueEx.assert_called_once()
         args = winreg.SetValueEx.call_args[0]
         assert args[-1] == "Deny"
+        hive_arg = winreg.CreateKeyEx.call_args[0][0]
+        assert hive_arg == winreg.HKEY_CURRENT_USER, (
+            "CreateKeyEx must use HKEY_CURRENT_USER"
+        )
 
     def test_disable_registry_error_graceful(self):
-        """When OpenKey raises OSError, returns None without raising."""
+        """When CreateKeyEx raises OSError, returns None without raising."""
         from src.system_config import disable_location_services
 
         winreg = MagicMock()
-        winreg.HKEY_LOCAL_MACHINE = 0x80000002
+        winreg.HKEY_CURRENT_USER = 0x80000001
         winreg.KEY_READ = 0x20019
         winreg.KEY_SET_VALUE = 0x0002
-        winreg.OpenKey.side_effect = OSError("Access denied")
+        winreg.CreateKeyEx.side_effect = OSError("Access denied")
 
         with patch.dict("sys.modules", {"winreg": winreg}), \
              patch("sys.platform", "win32"):
@@ -117,7 +129,7 @@ class TestDisableLocationServices:
 class TestRestoreLocationServices:
     def _make_winreg(self):
         winreg = MagicMock()
-        winreg.HKEY_LOCAL_MACHINE = 0x80000002
+        winreg.HKEY_CURRENT_USER = 0x80000001
         winreg.KEY_SET_VALUE = 0x0002
         winreg.REG_SZ = 1
 
@@ -141,6 +153,10 @@ class TestRestoreLocationServices:
         args = winreg.SetValueEx.call_args[0]
         assert args[-1] == "Allow"
         winreg.DeleteValue.assert_not_called()
+        hive_arg = winreg.OpenKey.call_args[0][0]
+        assert hive_arg == winreg.HKEY_CURRENT_USER, (
+            "OpenKey must use HKEY_CURRENT_USER"
+        )
 
     def test_restore_writes_original_deny(self):
         """restore('Deny') writes 'Deny' back to registry."""
