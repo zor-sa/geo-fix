@@ -1,16 +1,20 @@
 """Tests for system configuration module."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from src.system_config import (
     BROWSER_EXES,
+    CLEANUP_LABEL_FIREWALL,
     FW_RULE_PREFIX,
     STUN_PORTS,
     ProxyState,
+    _VALID_CLEANUP_LABELS,
+    _execute_cleanup_by_label,
     _list_firewall_rules_by_prefix,
+    cleanup,
     delete_state,
     load_state,
     remove_firewall_rules,
@@ -44,6 +48,17 @@ class TestProxyState:
         state = ProxyState(pid=1, preset_code="DE", timestamp="now")
         assert state.original_proxy_enable is None
         assert state.firefox_prefs_modified is False
+
+    def test_original_location_services_default(self):
+        """ProxyState() without original_location_services field -> field is None."""
+        state = ProxyState(pid=1, preset_code="US", timestamp="now")
+        assert state.original_location_services is None
+
+    def test_proxystate_backward_compat(self):
+        """ProxyState.from_json(json_without_field) -> succeeds, field is None."""
+        data = '{"pid": 1234, "preset_code": "US", "timestamp": "2026-03-27"}'
+        state = ProxyState.from_json(data)
+        assert state.original_location_services is None
 
 
 class TestStateFile:
@@ -184,3 +199,38 @@ class TestFirewallPrefixCleanup:
              f"name={expected_name}"],
             capture_output=True, text=True, timeout=10,
         )
+
+
+class TestCleanup:
+    def test_cleanup_label_in_allowlist(self):
+        """'Location Services restore' must be in _VALID_CLEANUP_LABELS."""
+        from src.system_config import CLEANUP_LABEL_LOCATION_SERVICES
+        assert CLEANUP_LABEL_LOCATION_SERVICES in _VALID_CLEANUP_LABELS
+
+    @patch("src.system_config.restore_location_services")
+    def test_execute_cleanup_by_label_location(self, mock_restore):
+        """_execute_cleanup_by_label('Location Services restore') calls restore_location_services(original=None)."""
+        from src.system_config import CLEANUP_LABEL_LOCATION_SERVICES
+        _execute_cleanup_by_label(CLEANUP_LABEL_LOCATION_SERVICES)
+        mock_restore.assert_called_once_with(original=None)
+
+    @patch("src.system_config.restore_location_services")
+    @patch("src.system_config.remove_firewall_rules")
+    @patch("src.system_config.unset_firefox_proxy")
+    @patch("src.system_config.unset_wininet_proxy")
+    @patch("src.system_config.delete_session_tmpdir")
+    @patch("src.system_config.uninstall_ca_cert")
+    @patch("src.system_config.delete_state")
+    def test_cleanup_dispatch_location_services(
+        self, mock_delete_state, mock_uninstall, mock_del_tmpdir,
+        mock_unset_wininet, mock_unset_firefox, mock_remove_fw, mock_restore
+    ):
+        """cleanup() with state having original_location_services='Allow' calls restore_location_services('Allow')."""
+        state = ProxyState(
+            pid=1,
+            preset_code="US",
+            timestamp="now",
+            original_location_services="Allow",
+        )
+        cleanup(state)
+        mock_restore.assert_called_once_with("Allow")

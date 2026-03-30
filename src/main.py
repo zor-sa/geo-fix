@@ -35,6 +35,7 @@ from src.health_check import (
     release_instance_lock,
 )
 from src.system_config import (
+    CLEANUP_LABEL_LOCATION_SERVICES,
     PROXY_HOST,
     PROXY_PORT,
     STATE_FILE,
@@ -47,8 +48,10 @@ from src.system_config import (
     delete_ca_public_cert,
     delete_cleanup_pending,
     delete_state,
+    disable_location_services,
     install_ca_cert,
     load_state,
+    restore_location_services,
     save_state,
     set_firefox_proxy,
     set_wininet_proxy,
@@ -612,6 +615,11 @@ def main():
 
     # Create firewall rules (every session, not just wizard)
     create_firewall_rules()
+    save_state(state)
+
+    # Disable Location Services and store original value for cleanup
+    original_location_services = disable_location_services()
+    state.original_location_services = original_location_services
     save_state(state)
 
     # Country switch callback for tray

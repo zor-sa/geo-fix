@@ -42,6 +42,7 @@ CLEANUP_LABEL_SESSION_TMPDIR = "Session tmpdir deletion"
 CLEANUP_LABEL_PROXY = "Proxy restore"
 CLEANUP_LABEL_FIREFOX = "Firefox restore"
 CLEANUP_LABEL_FIREWALL = "Firewall removal"
+CLEANUP_LABEL_LOCATION_SERVICES = "Location Services restore"
 
 # Retry delay for cleanup steps (seconds)
 _CLEANUP_RETRY_DELAY = 3
@@ -88,6 +89,7 @@ class ProxyState:
     session_tmpdir: Optional[str] = None
     ca_thumbprint: Optional[str] = None
     proxy_port: Optional[int] = None
+    original_location_services: Optional[str] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
@@ -696,6 +698,7 @@ _VALID_CLEANUP_LABELS = frozenset({
     CLEANUP_LABEL_PROXY,
     CLEANUP_LABEL_FIREFOX,
     CLEANUP_LABEL_FIREWALL,
+    CLEANUP_LABEL_LOCATION_SERVICES,
 })
 
 
@@ -734,6 +737,8 @@ def _execute_cleanup_by_label(label: str) -> None:
         unset_firefox_proxy(None)
     elif label == CLEANUP_LABEL_FIREWALL:
         remove_firewall_rules()
+    elif label == CLEANUP_LABEL_LOCATION_SERVICES:
+        restore_location_services(original=None)
     else:
         logger.warning("Unknown cleanup label: %s — skipping", label)
 
@@ -899,6 +904,9 @@ def cleanup(state: Optional[ProxyState] = None) -> list[str]:
 
     # Remove firewall rules (unconditional — rules are created every session)
     _try_step(CLEANUP_LABEL_FIREWALL, remove_firewall_rules)
+
+    # Restore Location Services if we disabled them
+    _try_step(CLEANUP_LABEL_LOCATION_SERVICES, restore_location_services, state.original_location_services)
 
     # Delete state file
     delete_state()
