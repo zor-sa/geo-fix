@@ -1,0 +1,136 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5, 6, 7],
+  "status": "approved",
+  "iteration": 2,
+  "tasks_reviewed": [1, 2, 3, 4, 5, 6, 7],
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 2,
+      "section": "Required Skills",
+      "issue": "Skill path uses a relative form 'skills/code-writing/SKILL.md' instead of the rooted form '~/.claude/skills/code-writing/SKILL.md' used in Task 1. The link may not resolve correctly for an agent loading the skill.",
+      "fix": "Change the link target to '~/.claude/skills/code-writing/SKILL.md' to match the Task 1 pattern."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 3,
+      "section": "Required Skills",
+      "issue": "Same path inconsistency as Task 2: 'skills/code-writing/SKILL.md' should be '~/.claude/skills/code-writing/SKILL.md'.",
+      "fix": "Change the link target to '~/.claude/skills/code-writing/SKILL.md'."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 4,
+      "section": "Reviewers",
+      "issue": "Reviewers section body is prose ('No external reviewers — this task IS the review.') rather than the suggested standard format. Minor style inconsistency; not a blocker.",
+      "fix": "Optionally replace with a single line: 'No reviewers — self-verifying task.' to standardise across tasks 4-7."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 5,
+      "section": "Reviewers",
+      "issue": "Same prose format as Task 4 Reviewers.",
+      "fix": "Same optional fix as Task 4."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 6,
+      "section": "Reviewers",
+      "issue": "Same prose format as Task 4 Reviewers.",
+      "fix": "Same optional fix as Task 4."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 7,
+      "section": "Reviewers",
+      "issue": "Same prose format as Task 4 Reviewers.",
+      "fix": "Same optional fix as Task 4."
+    }
+  ],
+  "cross_task": [
+    {
+      "check": "Critical findings from iteration 1 — scope overlap Tasks 1/3",
+      "result": "RESOLVED. Task 1 now owns only registry functions (disable_location_services / restore_location_services). All cleanup integration — CLEANUP_LABEL_LOCATION_SERVICES constant, _VALID_CLEANUP_LABELS addition, _execute_cleanup_by_label branch, ProxyState field, main.py startup call, cleanup() wiring — is exclusively in Task 3. Details section in Task 1 explicitly states it does NOT touch cleanup(), _execute_cleanup_by_label(), _VALID_CLEANUP_LABELS, or ProxyState.",
+      "affected_tasks": [1, 3]
+    },
+    {
+      "check": "Critical finding from iteration 1 — TDD Anchor misplacement in Task 1",
+      "result": "RESOLVED. test_proxystate_backward_compat and test_cleanup_retry_location_services are no longer in Task 1's TDD Anchor. They appear in Task 3's TDD Anchor where they belong.",
+      "affected_tasks": [1, 3]
+    },
+    {
+      "check": "Minor finding from iteration 1 — missing decisions.md in Task 1 Context Files",
+      "result": "RESOLVED. decisions.md is present in Task 1 Context Files.",
+      "affected_tasks": [1]
+    },
+    {
+      "check": "Minor finding from iteration 1 — missing user-spec.md in Task 2 Context Files",
+      "result": "RESOLVED. user-spec.md is present in Task 2 Context Files.",
+      "affected_tasks": [2]
+    },
+    {
+      "check": "Minor finding from iteration 1 — hardcoded round number in Task 2 Reviewers",
+      "result": "RESOLVED. Reviewer paths in Task 2 now use {round} placeholder consistently with Tasks 1 and 3.",
+      "affected_tasks": [2]
+    },
+    {
+      "check": "Minor finding from iteration 1 — missing user-spec.md and decisions.md in Task 3 Context Files",
+      "result": "RESOLVED. Both user-spec.md and decisions.md are present in Task 3 Context Files.",
+      "affected_tasks": [3]
+    },
+    {
+      "check": "Minor finding from iteration 1 — Task 6 missing test_system_config_location.py reference",
+      "result": "RESOLVED. Task 6 Context Files now includes test/test_system_config_location.py. Details also explicitly enumerates all required test coverage including Location Services registry tests from Task 1.",
+      "affected_tasks": [1, 6]
+    },
+    {
+      "check": "Minor finding from iteration 1 — TDD Anchor coordinate assertion in Task 2",
+      "result": "RESOLVED. test_request_intercepts_geolocation_api now explicitly requires asserting exact float equality against the preset's latitude/longitude values, not just key presence.",
+      "affected_tasks": [2]
+    },
+    {
+      "check": "Dependency graph — cycles and wave ordering",
+      "result": "VALID. No cycles. Wave ordering: Task 1/2 (wave 1, no deps), Task 3 (wave 2, depends_on [1]), Tasks 4/5/6 (wave 3, depends_on [1,2,3]), Task 7 (wave 4, depends_on [4,5,6]). All depends_on point to tasks in lower waves.",
+      "affected_tasks": [1, 2, 3, 4, 5, 6, 7]
+    },
+    {
+      "check": "Skill-reviewer mapping validity",
+      "result": "VALID. Tasks 1/2/3 use code-writing with code-reviewer + security-auditor + test-reviewer. Tasks 4-7 are self-verifying (audit/QA) with reviewers=[]; each uses the appropriate audit skill (code-reviewing, security-auditor, test-master, pre-deploy-qa).",
+      "affected_tasks": [1, 2, 3, 4, 5, 6, 7]
+    },
+    {
+      "check": "Carry-forward from tech-spec — AC and TDD Anchors",
+      "result": "VALID. All tech-spec acceptance criteria are carried forward: registry read-before-write, restore validation, non-Windows no-op, cleanup label pattern, geolocation-only JS on non-target, proxy API intercept with exact match, permissions.query scope, CSP skip guard, error handling, ProxyState backward compat. TDD Anchor tests map to all tech-spec Testing Strategy unit and integration test entries.",
+      "affected_tasks": [1, 2, 3]
+    },
+    {
+      "check": "No TDD Anchor on non-code tasks (4, 5, 6, 7)",
+      "result": "VALID. Tasks 4-7 are audit/QA tasks producing JSON reports, not code. None have a TDD Anchor section.",
+      "affected_tasks": [4, 5, 6, 7]
+    },
+    {
+      "check": "Shared Resources compliance (tech-spec: None)",
+      "result": "N/A. Tech-spec Shared Resources section is explicitly 'None'. No shared resource ownership checks required.",
+      "affected_tasks": []
+    }
+  ],
+  "iteration1_criticals_resolved": {
+    "all_resolved": true,
+    "count_was": 6,
+    "count_remaining": 0
+  },
+  "stats": {
+    "tasks_checked": 7,
+    "issues_found": 6,
+    "critical": 0,
+    "major": 0,
+    "minor": 6
+  }
+}
