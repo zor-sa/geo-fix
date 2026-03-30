@@ -66,6 +66,7 @@ _cleanup_lock = threading.Lock()
 _watchdog_proc = None
 _stop_token = None
 _session_tmpdir = None
+_session_id = None
 
 # RAM monitor state
 _last_restart_time: float = 0.0
@@ -453,6 +454,34 @@ def _restart_mitmproxy(
     return new_thread, new_master
 
 
+def _monitor_tick(last_vpn):
+    """Single tick of VPN + watchdog monitoring. Returns updated last_vpn state."""
+    global _watchdog_proc
+    # Check VPN
+    try:
+        vpn = check_vpn_status()
+        if vpn == VpnStatus.NOT_DETECTED and last_vpn != VpnStatus.NOT_DETECTED:
+            logger.warning("VPN disconnected!")
+            print("⚠ VPN отключён! Реальный IP может быть виден.", file=sys.stderr)
+        elif vpn == VpnStatus.DETECTED and last_vpn == VpnStatus.NOT_DETECTED:
+            logger.info("VPN reconnected")
+            print("✓ VPN восстановлен.", file=sys.stderr)
+        last_vpn = vpn
+    except Exception as e:
+        logger.debug("VPN check error: %s", e)
+    # Check watchdog health
+    if _watchdog_proc and _watchdog_proc.poll() is not None:
+        logger.warning("Watchdog died (rc=%s), respawning...", _watchdog_proc.returncode)
+        try:
+            from src.system_config import STATE_FILE
+            _watchdog_proc = _spawn_watchdog(
+                os.getpid(), str(STATE_FILE), _session_tmpdir, _session_id, _stop_token
+            )
+        except Exception as e:
+            logger.error("Failed to respawn watchdog: %s", e)
+    return last_vpn
+
+
 def main():
     _setup_logging()
     args = _parse_args()
@@ -510,10 +539,11 @@ def main():
         run_setup_wizard()
 
     # Create per-session tmpdir for ephemeral CA
-    global _session_tmpdir, _stop_token, _watchdog_proc
+    global _session_tmpdir, _stop_token, _watchdog_proc, _session_id
     session_id = str(uuid.uuid4())
     session_tmpdir = create_session_tmpdir()
     _session_tmpdir = session_tmpdir
+    _session_id = session_id
     stop_token = secrets.token_hex(32)
     _stop_token = stop_token
 
@@ -597,28 +627,7 @@ def main():
             stop_event.wait(timeout=60)
             if stop_event.is_set():
                 break
-            # Check VPN
-            try:
-                vpn = check_vpn_status()
-                if vpn == VpnStatus.NOT_DETECTED and last_vpn != VpnStatus.NOT_DETECTED:
-                    logger.warning("VPN disconnected!")
-                    print("⚠ VPN отключён! Реальный IP может быть виден.", file=sys.stderr)
-                elif vpn == VpnStatus.DETECTED and last_vpn == VpnStatus.NOT_DETECTED:
-                    logger.info("VPN reconnected")
-                    print("✓ VPN восстановлен.", file=sys.stderr)
-                last_vpn = vpn
-            except Exception as e:
-                logger.debug("VPN check error: %s", e)
-            # Check watchdog health
-            if _watchdog_proc and _watchdog_proc.poll() is not None:
-                logger.warning("Watchdog died (rc=%s), respawning...", _watchdog_proc.returncode)
-                try:
-                    from src.system_config import STATE_FILE
-                    globals()["_watchdog_proc"] = _spawn_watchdog(
-                        os.getpid(), str(STATE_FILE), _session_tmpdir, session_id, stop_token
-                    )
-                except Exception as e:
-                    logger.error("Failed to respawn watchdog: %s", e)
+            last_vpn = _monitor_tick(last_vpn)
 
             # RAM check
             try:
