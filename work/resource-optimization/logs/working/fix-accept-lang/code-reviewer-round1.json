@@ -1,0 +1,40 @@
+{
+  "status": "approved",
+  "summary": "Fix correctly restores Accept-Language rewriting for all domains. The two-line removal of the is_target_domain() guard from request() is minimal and surgical. JS injection and CSP nonce logic in response() remain correctly gated behind is_target_domain(). Tests adequately cover the fix with both a renamed existing test and a new TestAcceptLanguageAllDomains class.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "test/test_proxy_addon.py",
+      "line": 361,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "TestAcceptLanguageAllDomains duplicates FakeHeaders/FakeRequest/FakeFlow infrastructure from TestGeoFixAddon's make_flow fixture. Could extract to a shared module-level fixture or conftest.",
+      "benefit": "Reduces test code duplication and maintenance surface.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 1,
+    "testCoverageAssessment": "excellent"
+  },
+  "details": {
+    "fix_verified": {
+      "accept_language_all_domains": true,
+      "evidence": "request() no longer has is_target_domain() guard. Lines 146-151 of src/proxy_addon.py: lock acquired, _last_flow_time updated, accept_lang read from preset, header set unconditionally for every flow.",
+      "lock_scope_correct": true,
+      "lock_scope_note": "Lock correctly covers _last_flow_time and _preset reads. Header assignment outside lock is safe — flow is not shared between threads."
+    },
+    "js_csp_guards_intact": {
+      "response_method_unchanged": true,
+      "evidence": "src/proxy_addon.py:158-161: response() still returns early if not is_target_domain(host). No change to JS injection or CSP nonce logic."
+    },
+    "tests_cover_fix": {
+      "renamed_test": "test_request_rewrites_accept_language_non_target_domain — assertion flipped from 'ru-RU' (no rewrite) to 'en-US,en;q=0.9' (rewrite applied). Correctly validates fix.",
+      "new_test_class": "TestAcceptLanguageAllDomains: 3 tests — non-target (example.com), random (some-random-site.org), and target (www.google.com). All verify Accept-Language is rewritten.",
+      "no_regressions": "41 tests pass per fixer report."
+    }
+  }
+}

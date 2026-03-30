@@ -112,12 +112,21 @@ Browser receives modified HTML → inject.js IIFE executes:
 
 ## State Management
 
-`ProxyState` dataclass persisted as `.geo-fix-state.json` (atomic write):
-- PID, preset code, timestamp
+`ProxyState` dataclass persisted as `.geo-fix-state.bin` (DPAPI-encrypted, atomic write):
+- PID, preset code, timestamp, session ID, session tmpdir, proxy port
 - Original proxy settings (WinINET backup)
 - Firefox modification flag + backup path
-- Firewall rules flag
+- CA thumbprint for targeted cert removal
 - Schema-validated on load (unknown fields rejected)
+
+**Cleanup resilience** (`cleanup_pending.json` in APPDATA/geo-fix/):
+- On cleanup failure: each step retried once after 3s delay
+- Persistent failures written as JSON label list → re-executed on next startup via `check_pending_cleanup()`
+- Labels validated against allowlist before dispatch (CWE-20 mitigation)
+
+## Security: CA Key Lifecycle
+
+CA private key exists on disk only during mitmproxy startup (seconds). After proxy is confirmed running, `delete_ca_key_files()` removes private key, PKCS12, and DER copy from session tmpdir. Public cert deleted after `install_ca_cert()`. Key remains only in mitmproxy process memory.
 
 ## Testing Strategy
 

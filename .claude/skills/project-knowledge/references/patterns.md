@@ -22,6 +22,14 @@
 - E2E tests: Playwright + Chromium through proxy (optional, `importorskip`)
 - CI: 3 tiers sequentially on `windows-latest`
 
+## Cleanup & Recovery
+
+- Cleanup steps use retry-with-delay pattern: try → fail → sleep 3s → retry once
+- Failed cleanup labels persisted to `APPDATA/geo-fix/cleanup_pending.json` for startup recovery
+- Firewall rules discovered dynamically by prefix (`geo-fix-webrtc*`) via netsh query, with fixed-list fallback
+- Sensitive files (CA private key) deleted from disk immediately after loading into memory
+- Watchdog subprocess monitored by main process — auto-respawned on death
+
 ## Business Rules
 
 - Accept-Language rewriting applies to ALL domains
