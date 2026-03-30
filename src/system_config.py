@@ -855,7 +855,7 @@ def cleanup(state: Optional[ProxyState] = None) -> list[str]:
     Each step is tried once; on failure, retried after a 3-second delay.
     Returns list of step labels that failed after retry (empty on full success).
 
-    Cleanup order: CA cert → session tmpdir → proxy → Firefox → firewall → state file.
+    Cleanup order: CA cert → session tmpdir → proxy → Firefox → firewall → Location Services → state file.
     CA cert and tmpdir MUST be removed before delete_state() because they need
     thumbprint and path from the state object.
     """

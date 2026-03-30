@@ -1,0 +1,62 @@
+{
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "file": "src/system_config.py",
+      "line": "631",
+      "issue": "Wrong registry hive: HKEY_LOCAL_MACHINE used instead of HKEY_CURRENT_USER in disable_location_services(). The tech-spec (Decision 1) explicitly requires HKCU to avoid admin elevation. HKLM requires admin rights and will raise OSError (Access denied) for non-privileged users, silently falling back to no-op.",
+      "fix": "Replace winreg.HKEY_LOCAL_MACHINE with winreg.HKEY_CURRENT_USER in both OpenKey calls (lines 631 and 673). The key path SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\DeviceAccess\\Global\\{BFA794E4...} is correct — only the hive is wrong."
+    },
+    {
+      "severity": "critical",
+      "file": "src/system_config.py",
+      "line": "673",
+      "issue": "Wrong registry hive: HKEY_LOCAL_MACHINE used instead of HKEY_CURRENT_USER in restore_location_services(). Same issue as above — both functions must operate on HKCU.",
+      "fix": "Replace winreg.HKEY_LOCAL_MACHINE with winreg.HKEY_CURRENT_USER."
+    },
+    {
+      "severity": "critical",
+      "file": "test/test_system_config_location.py",
+      "line": "20",
+      "issue": "Tests set winreg.HKEY_LOCAL_MACHINE on the mock and do not assert which hive is passed to OpenKey, so the wrong-hive bug in the implementation goes undetected. All test classes replicate this gap.",
+      "fix": "Change the mock constant to winreg.HKEY_CURRENT_USER (value 0x80000001) and add an assertion that OpenKey is called with HKEY_CURRENT_USER as the first argument, e.g.: winreg.OpenKey.assert_called_once_with(winreg.HKEY_CURRENT_USER, LOCATION_KEY_PATH, 0, ...). This is the single test change that would have caught the hive bug."
+    },
+    {
+      "severity": "high",
+      "file": "src/system_config.py",
+      "line": "630",
+      "issue": "disable_location_services() does not use CreateKeyEx when the key does not exist. If QueryValueEx raises FileNotFoundError (key path absent), OpenKey on a non-existent key will itself raise FileNotFoundError before the inner try block runs, causing the outer OSError handler to catch it and return None without writing Deny. Task spec (edge case section) explicitly says the function must create the key when it is absent.",
+      "fix": "Replace winreg.OpenKey with winreg.CreateKeyEx for the write operation, or use OpenKey with KEY_SET_VALUE | KEY_CREATE_SUB_KEY access flag so the key is created if missing. Alternatively, open for read first (catching FileNotFoundError to record original=None), then open/create separately for write."
+    },
+    {
+      "severity": "high",
+      "file": "src/system_config.py",
+      "line": "693",
+      "issue": "The new cleanup label CLEANUP_LABEL_LOCATION (Location Services restore) is missing from _VALID_CLEANUP_LABELS. Task 3 depends on it, but Task 1 was supposed to add only the registry functions — however _VALID_CLEANUP_LABELS is defined in system_config.py in the same file. The label constant itself is also not declared (no CLEANUP_LABEL_LOCATION constant). This leaves Task 3 with no valid label to register.",
+      "fix": "This is correctly deferred to Task 3 per the task spec ('this task does NOT touch cleanup()'). No action required in Task 1 — document this as a deliberate scope boundary. Finding severity downgraded to informational if confirmed intentional."
+    },
+    {
+      "severity": "medium",
+      "file": "test/test_system_config_location.py",
+      "line": "103",
+      "issue": "test_non_windows_disable_noop uses monkeypatch.setattr(sys, 'platform', 'linux') but other tests in the same class use patch('sys.platform', 'win32'). The inconsistency is harmless but the monkeypatch form does not restore platform after the test if an exception occurs before the fixture teardown in some edge conditions. The patch() form used elsewhere is safer and more consistent.",
+      "fix": "Prefer patch('sys.platform', 'linux') as a context manager for consistency with the rest of the test file."
+    },
+    {
+      "severity": "medium",
+      "file": "test/test_system_config_location.py",
+      "line": "37",
+      "issue": "test_disable_reads_before_writing verifies call order via a side_effect list, but does not assert that OpenKey was called at all or that the correct key path was passed. If the implementation changes to bypass OpenKey, the test would still pass.",
+      "fix": "Add winreg.OpenKey.assert_called_once() and verify the key path argument includes _LOCATION_KEY_PATH. This makes the test structurally sound, not just order-dependent."
+    },
+    {
+      "severity": "low",
+      "file": "test/test_system_config_location.py",
+      "line": "21",
+      "issue": "The mock sets KEY_READ = 0x20019, but the implementation uses KEY_READ | KEY_SET_VALUE. Windows defines KEY_QUERY_VALUE = 0x0001 and KEY_READ = 0x20019. Using KEY_READ is broader than necessary (spec says KEY_QUERY_VALUE | KEY_SET_VALUE). Not a functional bug but a minor over-privilege on the registry access mask.",
+      "fix": "In the implementation, use winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE instead of winreg.KEY_READ | winreg.KEY_SET_VALUE to follow the principle of least privilege. The test mock constant can stay as-is or be corrected to match."
+    }
+  ],
+  "summary": "Two critical bugs exist: (1) both registry functions open HKEY_LOCAL_MACHINE instead of HKEY_CURRENT_USER — this is the primary purpose of the task (no-admin HKCU access) and will silently fail in production as OSError gets swallowed; (2) the tests set HKEY_LOCAL_MACHINE on the mock and never assert the hive passed to OpenKey, meaning the tests cannot detect the wrong-hive bug. Additionally, disable_location_services() does not handle the case where the key is absent at the OpenKey level (uses OpenKey instead of CreateKeyEx), so the 'key did not exist' path may not write Deny as specified. These issues require changes before the task can be marked complete."
+}

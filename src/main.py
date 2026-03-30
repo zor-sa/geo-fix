@@ -35,7 +35,6 @@ from src.health_check import (
     release_instance_lock,
 )
 from src.system_config import (
-    CLEANUP_LABEL_LOCATION_SERVICES,
     PROXY_HOST,
     PROXY_PORT,
     STATE_FILE,

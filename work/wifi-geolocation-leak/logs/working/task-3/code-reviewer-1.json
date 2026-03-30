@@ -1,0 +1,53 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Task 3 implementation correctly wires Location Services disable/restore into the startup and cleanup lifecycle. All acceptance criteria are satisfied: ProxyState has the new field with backward-compatible default, the cleanup label is registered in _VALID_CLEANUP_LABELS and dispatched correctly, the restore call is ordered after firewall removal and before delete_state(), and main.py calls disable_location_services() and saves state. Two issues need attention: the cleanup() docstring omits Location Services from the ordering comment, and the primary startup test (test_main_startup_calls_disable) is structurally incomplete — it mocks the functions but never invokes any startup logic or asserts the mocks were called.",
+  "findings": [
+    {
+      "file": "test/test_main.py",
+      "line": 13,
+      "severity": "major",
+      "category": "testing",
+      "issue": "test_main_startup_calls_disable does not verify that disable_location_services() is actually called during startup",
+      "detail": "The test patches src.main.disable_location_services (return_value='Allow') and src.main.save_state, but never invokes main() or any startup sequence code. The decorated mock objects are therefore never exercised. The only assertion is that the symbol is importable from the module namespace, which is a weaker check already covered by test_disable_location_services_importable_from_main. The task spec requires this test to assert that disable_location_services is called with no arguments and that state.original_location_services is assigned before save_state — neither is verified. A call to mock_disable.assert_called_once() and state inspection after a controlled startup execution are both absent.",
+      "impact": "A regression that removes the disable_location_services() call from main() would not be caught by this test. The spec anchor test requirement is not met.",
+      "recommendation": "Refactor the test to invoke the startup sequence under full patch isolation. The standard approach for testing main() startup logic is to patch all external dependencies (acquire_instance_lock, check_pending_cleanup, check_vpn_status, is_setup_complete, create_session_tmpdir, GeoFixAddon, _start_mitmproxy, install_ca_cert, delete_ca_key_files, delete_ca_public_cert, _spawn_watchdog, set_wininet_proxy, set_firefox_proxy, create_firewall_rules, disable_location_services, save_state, GeoFixTray, stop_event) and then call main() with a mocked args. Alternatively, extract the startup side-effects into a testable helper function _startup_system_changes(state) and test that directly. At minimum: mock_disable.assert_called_once() and assert that save_state was called after state.original_location_services was set to 'Allow'."
+    },
+    {
+      "file": "src/main.py",
+      "line": 38,
+      "severity": "minor",
+      "category": "maintainability",
+      "issue": "CLEANUP_LABEL_LOCATION_SERVICES is imported in main.py but not used there",
+      "detail": "The import block at lines 37-61 includes CLEANUP_LABEL_LOCATION_SERVICES, but this constant is only used internally in system_config.py (in _VALID_CLEANUP_LABELS and _execute_cleanup_by_label). The constant serves no purpose in main.py at runtime. The only reason it appears is that test_main.py::test_cleanup_label_location_services_importable_from_main asserts it is accessible from main's namespace — but that assertion is itself of questionable value since the constant has no role in main.py's logic.",
+      "impact": "Superfluous import; minor readability noise. If CLEANUP_LABEL_LOCATION_SERVICES is renamed or moved, the import will silently become stale since nothing in main.py uses it.",
+      "recommendation": "Remove CLEANUP_LABEL_LOCATION_SERVICES from the main.py import block and delete the corresponding test assertion in test_main.py. The constant's presence in _VALID_CLEANUP_LABELS and _execute_cleanup_by_label is verified by the system_config tests which are the correct home for that coverage."
+    },
+    {
+      "file": "src/system_config.py",
+      "line": 858,
+      "severity": "minor",
+      "category": "readability",
+      "issue": "cleanup() docstring omits Location Services from the ordering comment",
+      "detail": "The docstring at line 858 states: 'Cleanup order: CA cert → session tmpdir → proxy → Firefox → firewall → state file.' The actual execution order is now: CA cert → session tmpdir → proxy → Firefox → firewall → Location Services → state file. The Location Services restore step is present in the implementation but absent from the documentation.",
+      "impact": "A future developer reading the docstring will have an inaccurate mental model of cleanup ordering. Low severity since the code is self-explanatory, but the docstring comment is meant to be the authoritative description.",
+      "recommendation": "Update the docstring to: 'Cleanup order: CA cert → session tmpdir → proxy → Firefox → firewall → Location Services restore → state file.'"
+    },
+    {
+      "file": "src/system_config.py",
+      "line": 674,
+      "severity": "minor",
+      "category": "correctness",
+      "issue": "restore_location_services with original=None leaves the registry key present (only deletes value), not restoring 'key did not exist' state exactly",
+      "detail": "disable_location_services() uses CreateKeyEx, which creates the key if it was absent. If the key did not exist before geo-fix ran (original=None), restore_location_services uses OpenKey + DeleteValue, which deletes the value but leaves the empty key in the registry. The state before disable was 'key absent'; the state after restore is 'key present, value absent'. For Windows Location Services this is functionally equivalent (the value absence means the OS applies its default), but it is a minor semantic deviation from exact state restoration. Additionally, if the registry path itself does not exist (e.g. older Windows builds without this DeviceAccess key), OpenKey raises FileNotFoundError (an OSError subclass), which is caught and logged as a warning — this is correct graceful degradation but is undocumented.",
+      "impact": "Functionally benign for the Location Services use-case. The lingering empty key is not visible to users and does not affect Location Services behavior. No action required unless exact registry state restoration becomes a requirement.",
+      "recommendation": "No code change required. Consider adding a comment in restore_location_services explaining that when original is None, only the value is deleted (not the key), and that this is intentional because the key may not have existed or may have been created by CreateKeyEx."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 1,
+    "minorIssuesCount": 3,
+    "testCoverageAssessment": "adequate"
+  }
+}
