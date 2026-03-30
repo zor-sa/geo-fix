@@ -39,6 +39,7 @@ from src.system_config import (
     PROXY_PORT,
     STATE_FILE,
     ProxyState,
+    check_pending_cleanup,
     cleanup,
     create_firewall_rules,
     create_session_tmpdir,
@@ -52,6 +53,7 @@ from src.system_config import (
     set_wininet_proxy,
     unset_firefox_proxy,
     unset_wininet_proxy,
+    write_cleanup_pending,
 )
 from src.setup_wizard import is_setup_complete, run_setup_wizard
 from src.proxy_addon import FlowCleanup, GeoFixAddon
@@ -245,8 +247,9 @@ def _do_cleanup():
             _remove_onlogon_task()
             release_instance_lock()
             if failures:
+                write_cleanup_pending(failures)
                 msg = "Не удалось полностью очистить:\n" + "\n".join(f"  - {f}" for f in failures)
-                msg += "\nЗапустите `geo-fix --cleanup` для повторной очистки."
+                msg += "\nОчистка будет выполнена автоматически при следующем запуске."
                 print(msg, file=sys.stderr)
         except Exception as e:
             logger.error("Cleanup error: %s", e)
@@ -512,6 +515,9 @@ def main():
 
     country_code = _validate_country(args.country)
     preset = get_preset(country_code)
+
+    # Clean up pending operations from previous failed cleanup
+    check_pending_cleanup()
 
     # Check for stale state and clean up
     stale = load_state()

@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
@@ -31,6 +32,19 @@ FW_RULE_PREFIX = "geo-fix-webrtc"
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 8080
 PROXY_ADDR = f"{PROXY_HOST}:{PROXY_PORT}"
+
+# Cleanup pending file (app data dir)
+CLEANUP_PENDING_FILE = Path(os.environ.get("APPDATA", str(Path.home()))) / "geo-fix" / "cleanup_pending.json"
+
+# Cleanup step labels
+CLEANUP_LABEL_CA_CERT = "CA cert removal"
+CLEANUP_LABEL_SESSION_TMPDIR = "Session tmpdir deletion"
+CLEANUP_LABEL_PROXY = "Proxy restore"
+CLEANUP_LABEL_FIREFOX = "Firefox restore"
+CLEANUP_LABEL_FIREWALL = "Firewall removal"
+
+# Retry delay for cleanup steps (seconds)
+_CLEANUP_RETRY_DELAY = 3
 
 # mitmproxy CA cert paths
 MITMPROXY_CA_DIR = Path.home() / ".mitmproxy"
@@ -590,6 +604,70 @@ def remove_firewall_rules() -> None:
         logger.info("Firewall rules removed (fallback method)")
 
 
+# === Cleanup Persistence ===
+
+def write_cleanup_pending(failed_ops: list[str]) -> None:
+    """Write failed cleanup operations to app data dir as JSON."""
+    try:
+        CLEANUP_PENDING_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CLEANUP_PENDING_FILE.write_text(json.dumps(failed_ops), encoding="utf-8")
+        logger.info("Wrote cleanup_pending.json with %d operation(s)", len(failed_ops))
+    except Exception as e:
+        logger.warning("Could not write cleanup_pending.json: %s", e)
+
+
+def _execute_cleanup_by_label(label: str) -> None:
+    """Execute a single cleanup operation by its label (stateless mode)."""
+    if label == CLEANUP_LABEL_CA_CERT:
+        uninstall_ca_cert(thumbprint=None)
+    elif label == CLEANUP_LABEL_SESSION_TMPDIR:
+        temp_dir = Path(tempfile.gettempdir())
+        for d in temp_dir.glob("geo-fix-*"):
+            if d.is_dir():
+                shutil.rmtree(str(d), ignore_errors=True)
+    elif label == CLEANUP_LABEL_PROXY:
+        unset_wininet_proxy(None)
+    elif label == CLEANUP_LABEL_FIREFOX:
+        unset_firefox_proxy(None)
+    elif label == CLEANUP_LABEL_FIREWALL:
+        remove_firewall_rules()
+    else:
+        logger.warning("Unknown cleanup label: %s — skipping", label)
+
+
+def check_pending_cleanup() -> None:
+    """Read cleanup_pending.json on startup and re-execute pending operations."""
+    if not CLEANUP_PENDING_FILE.exists():
+        return
+
+    try:
+        data = json.loads(CLEANUP_PENDING_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("Could not read cleanup_pending.json: %s", e)
+        return
+
+    if not isinstance(data, list):
+        logger.warning("cleanup_pending.json has invalid format — removing")
+        CLEANUP_PENDING_FILE.unlink(missing_ok=True)
+        return
+
+    logger.info("Found %d pending cleanup operation(s)", len(data))
+    still_failed = []
+    for label in data:
+        try:
+            _execute_cleanup_by_label(label)
+        except Exception as e:
+            logger.warning("Pending cleanup '%s' failed again: %s", label, e)
+            still_failed.append(label)
+
+    if still_failed:
+        CLEANUP_PENDING_FILE.write_text(json.dumps(still_failed), encoding="utf-8")
+        logger.warning("%d pending cleanup operation(s) still failing", len(still_failed))
+    else:
+        CLEANUP_PENDING_FILE.unlink(missing_ok=True)
+        logger.info("All pending cleanup operations completed successfully")
+
+
 # === Cleanup ===
 
 def stateless_cleanup() -> None:
@@ -650,8 +728,11 @@ def stateless_cleanup() -> None:
     logger.info("Stateless cleanup complete")
 
 
-def cleanup(state: Optional[ProxyState] = None) -> None:
+def cleanup(state: Optional[ProxyState] = None) -> list[str]:
     """Revert all system changes. Used on stop and crash recovery.
+
+    Each step is tried once; on failure, retried after a 3-second delay.
+    Returns list of step labels that failed after retry (empty on full success).
 
     Cleanup order: CA cert → session tmpdir → proxy → Firefox → firewall → state file.
     CA cert and tmpdir MUST be removed before delete_state() because they need
@@ -663,51 +744,45 @@ def cleanup(state: Optional[ProxyState] = None) -> None:
     if state is None:
         logger.info("No state file found — attempting best-effort stateless cleanup")
         stateless_cleanup()
-        return
+        return []
 
     logger.info("Running cleanup...")
     failures = []
 
+    def _try_step(label: str, func, *args, **kwargs) -> None:
+        """Execute a cleanup step with one retry on failure."""
+        try:
+            func(*args, **kwargs)
+        except Exception as e:
+            logger.warning("Cleanup step '%s' failed: %s — retrying in %ds",
+                           label, e, _CLEANUP_RETRY_DELAY)
+            time.sleep(_CLEANUP_RETRY_DELAY)
+            try:
+                func(*args, **kwargs)
+            except Exception as e2:
+                failures.append(label)
+                logger.error("Cleanup step '%s' failed after retry: %s", label, e2)
+
     # Remove CA cert BEFORE deleting state (needs thumbprint)
-    try:
-        uninstall_ca_cert(state.ca_thumbprint)
-    except Exception as e:
-        failures.append(f"CA cert removal: {e}")
-        logger.error("Failed to remove CA cert: %s", e)
+    _try_step(CLEANUP_LABEL_CA_CERT, uninstall_ca_cert, state.ca_thumbprint)
 
     # Delete session tmpdir (contains CA private key)
-    try:
-        delete_session_tmpdir(state.session_tmpdir)
-    except Exception as e:
-        failures.append(f"Session tmpdir deletion: {e}")
-        logger.error("Failed to delete session tmpdir: %s", e)
+    _try_step(CLEANUP_LABEL_SESSION_TMPDIR, delete_session_tmpdir, state.session_tmpdir)
 
     # Restore proxy
-    try:
-        original = {
-            "ProxyEnable": state.original_proxy_enable or 0,
-            "ProxyServer": state.original_proxy_server or "",
-            "ProxyOverride": state.original_proxy_override or "",
-        }
-        unset_wininet_proxy(original)
-    except Exception as e:
-        failures.append(f"Proxy restore: {e}")
-        logger.error("Failed to restore proxy: %s", e)
+    original = {
+        "ProxyEnable": state.original_proxy_enable or 0,
+        "ProxyServer": state.original_proxy_server or "",
+        "ProxyOverride": state.original_proxy_override or "",
+    }
+    _try_step(CLEANUP_LABEL_PROXY, unset_wininet_proxy, original)
 
     # Restore Firefox
-    try:
-        if state.firefox_prefs_modified:
-            unset_firefox_proxy(state.firefox_prefs_backup)
-    except Exception as e:
-        failures.append(f"Firefox restore: {e}")
-        logger.error("Failed to restore Firefox: %s", e)
+    if state.firefox_prefs_modified:
+        _try_step(CLEANUP_LABEL_FIREFOX, unset_firefox_proxy, state.firefox_prefs_backup)
 
     # Remove firewall rules (unconditional — rules are created every session)
-    try:
-        remove_firewall_rules()
-    except Exception as e:
-        failures.append(f"Firewall rules removal: {e}")
-        logger.error("Failed to remove firewall rules: %s", e)
+    _try_step(CLEANUP_LABEL_FIREWALL, remove_firewall_rules)
 
     # Delete state file
     delete_state()
