@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, PropertyMock
 import pytest
 
 from src.presets import PRESETS, CountryPreset
-from src.proxy_addon import GeoFixAddon, FlowCleanup, _find_inject_position, _build_js_payload, _generate_nonce, _modify_csp
+from src.proxy_addon import GeoFixAddon, FlowCleanup, _find_inject_position, _build_js_payload, _generate_nonce, _modify_csp, _has_restrictive_csp
 
 
 class TestFindInjectPosition:
@@ -132,10 +132,12 @@ class TestGeoFixAddon:
                 self._text_was_set = True
 
         class FakeRequest:
-            def __init__(self, host, path, headers):
+            def __init__(self, host, path, headers, method='GET'):
                 self.host = host
+                self.path = path
                 self.url = f"https://{host}{path}"
                 self.headers = headers
+                self.method = method
 
         class FakeFlow:
             def __init__(self, request, response):
@@ -144,10 +146,10 @@ class TestGeoFixAddon:
 
         def _make(host="www.google.com", path="/", content_type="text/html; charset=utf-8",
                   body="<html><head><title>Test</title></head><body>Hi</body></html>",
-                  status_code=200):
+                  status_code=200, method='GET'):
             req_headers = FakeHeaders({"Accept-Language": "ru-RU,ru;q=0.9"})
             resp_headers = FakeHeaders({"content-type": content_type})
-            request = FakeRequest(host, path, req_headers)
+            request = FakeRequest(host, path, req_headers, method=method)
             response = FakeResponse(status_code, resp_headers, body)
             return FakeFlow(request, response)
         return _make
@@ -170,10 +172,11 @@ class TestGeoFixAddon:
         assert "getTimezoneOffset" in flow.response.text
 
     def test_response_skips_non_target_domain(self, addon, make_flow):
+        """Non-target domains now get geo-only injection (has getCurrentPosition, no getTimezoneOffset)."""
         flow = make_flow(host="example.com")
-        original_text = flow.response.text
         addon.response(flow)
-        assert flow.response.text == original_text
+        assert "getCurrentPosition" in flow.response.text
+        assert "getTimezoneOffset" not in flow.response.text
 
     def test_response_skips_non_html(self, addon, make_flow):
         flow = make_flow(content_type="application/json", body='{"key": "value"}')
@@ -220,6 +223,124 @@ class TestGeoFixAddon:
         flow = make_flow()
         addon.request(flow)
         assert flow.request.headers["Accept-Language"] == "nl-NL,nl;q=0.9,en;q=0.8"
+
+    # --- Geolocation API intercept tests ---
+
+    def test_request_intercepts_geolocation_api(self, addon, make_flow):
+        """POST to googleapis.com/geolocation → response set with lat/lng matching preset."""
+        flow = make_flow(host="www.googleapis.com", path="/geolocation/v1/geolocate", method="POST")
+        flow.response = None
+        addon.request(flow)
+        assert flow.response is not None
+        import json
+        body = json.loads(flow.response.text)
+        assert body["location"]["lat"] == addon.preset.latitude
+        assert body["location"]["lng"] == addon.preset.longitude
+
+    def test_request_intercept_accuracy_randomized(self, addon, make_flow):
+        """20 runs: accuracy always 40-80, at least 2 distinct values."""
+        import json
+        accuracies = set()
+        for _ in range(20):
+            flow = make_flow(host="www.googleapis.com", path="/geolocation/v1/geolocate", method="POST")
+            flow.response = None
+            addon.request(flow)
+            body = json.loads(flow.response.text)
+            acc = body["accuracy"]
+            assert 40 <= acc <= 80, f"accuracy out of range: {acc}"
+            accuracies.add(acc)
+        assert len(accuracies) >= 2, "accuracy should vary across runs"
+
+    def test_request_intercept_wrong_host_skipped(self, addon, make_flow):
+        """maps.googleapis.com → no intercept (response stays None)."""
+        flow = make_flow(host="maps.googleapis.com", path="/geolocation/v1/geolocate", method="POST")
+        flow.response = None
+        addon.request(flow)
+        assert flow.response is None
+
+    def test_request_intercept_wrong_path_skipped(self, addon, make_flow):
+        """Wrong path → no intercept."""
+        flow = make_flow(host="www.googleapis.com", path="/maps/v1/geocode", method="POST")
+        flow.response = None
+        addon.request(flow)
+        assert flow.response is None
+
+    def test_request_intercept_wrong_method_skipped(self, addon, make_flow):
+        """GET → no intercept."""
+        flow = make_flow(host="www.googleapis.com", path="/geolocation/v1/geolocate", method="GET")
+        flow.response = None
+        addon.request(flow)
+        assert flow.response is None
+
+    def test_request_intercept_error_logs_and_passes_through(self, addon, make_flow):
+        """mock random.randint to raise → logged, passed through (response stays None)."""
+        from unittest.mock import patch
+        flow = make_flow(host="www.googleapis.com", path="/geolocation/v1/geolocate", method="POST")
+        flow.response = None
+        with patch("src.proxy_addon.random.randint", side_effect=RuntimeError("boom")):
+            addon.request(flow)
+        assert flow.response is None
+
+    # --- Response injection tests ---
+
+    def test_response_injects_geo_only_on_non_target_domain(self, addon, make_flow):
+        """Non-target HTML → has getCurrentPosition, no getTimezoneOffset."""
+        flow = make_flow(host="example.com")
+        addon.response(flow)
+        assert "getCurrentPosition" in flow.response.text
+        assert "getTimezoneOffset" not in flow.response.text
+
+    def test_response_injects_full_payload_on_target_domain(self, addon, make_flow):
+        """Target domain → still has getTimezoneOffset (regression check)."""
+        flow = make_flow(host="www.google.com")
+        addon.response(flow)
+        assert "getTimezoneOffset" in flow.response.text
+
+    def test_response_skips_injection_on_script_src_none_csp(self, addon, make_flow):
+        """script-src 'none' CSP on non-target → skip injection entirely."""
+        flow = make_flow(host="example.com")
+        flow.response.headers["content-security-policy"] = "script-src 'none'"
+        original_text = flow.response.text
+        addon.response(flow)
+        assert flow.response.text == original_text
+
+    def test_response_skips_injection_on_require_trusted_types_csp(self, addon, make_flow):
+        """require-trusted-types-for 'script' CSP on non-target → skip injection."""
+        flow = make_flow(host="example.com")
+        flow.response.headers["content-security-policy"] = "require-trusted-types-for 'script'"
+        original_text = flow.response.text
+        addon.response(flow)
+        assert flow.response.text == original_text
+
+    def test_response_injects_on_normal_csp_non_target(self, addon, make_flow):
+        """Normal CSP on non-target → geo-only injection proceeds."""
+        flow = make_flow(host="example.com")
+        flow.response.headers["content-security-policy"] = "default-src 'self'"
+        addon.response(flow)
+        assert "getCurrentPosition" in flow.response.text
+
+
+class TestHasRestrictiveCSP:
+    """Unit tests for _has_restrictive_csp helper."""
+
+    def test_has_restrictive_csp_detects_script_src_none(self):
+        assert _has_restrictive_csp("script-src 'none'") is True
+
+    def test_has_restrictive_csp_detects_require_trusted_types(self):
+        assert _has_restrictive_csp("require-trusted-types-for 'script'") is True
+
+    def test_has_restrictive_csp_returns_false_for_normal(self):
+        assert _has_restrictive_csp("default-src 'self'; script-src 'self' 'unsafe-inline'") is False
+
+    def test_has_restrictive_csp_case_insensitive_script_src_none(self):
+        assert _has_restrictive_csp("Script-Src 'None'") is True
+
+    def test_has_restrictive_csp_script_src_none_mixed_with_others(self):
+        """script-src 'none' 'self' is NOT considered restrictive (mixed with other sources)."""
+        assert _has_restrictive_csp("script-src 'none' 'self'") is False
+
+    def test_has_restrictive_csp_empty_string(self):
+        assert _has_restrictive_csp("") is False
 
 
 class TestFlowCleanup:

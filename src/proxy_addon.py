@@ -4,8 +4,10 @@ Rewrites Accept-Language headers on all requests.
 For target domains: injects JS payload with CSP nonce into HTML responses.
 """
 
+import json
 import logging
 import os
+import random
 import re
 import secrets
 import threading
@@ -72,6 +74,68 @@ def _build_js_payload(preset: CountryPreset) -> str:
     return js
 
 
+def _build_geo_only_payload(preset: CountryPreset) -> str:
+    """Build a minimal JS IIFE with only geolocation + permissions overrides."""
+    lat = preset.latitude
+    lon = preset.longitude
+    return f"""(function(){{
+    'use strict';
+    function stealthDefine(obj,prop,descriptor){{
+        try{{Object.defineProperty(obj,prop,Object.assign({{configurable:false,enumerable:true}},descriptor));}}catch(e){{}}
+    }}
+    function disguiseFunction(fn,name){{
+        try{{Object.defineProperty(fn,'toString',{{value:function(){{return 'function '+name+'() {{ [native code] }}';
+        }},configurable:false,enumerable:false,writable:false}});}}catch(e){{}}
+        return fn;
+    }}
+    var GF_LAT={lat};
+    var GF_LON={lon};
+    var fakePosition={{coords:{{latitude:GF_LAT,longitude:GF_LON,accuracy:50,altitude:null,altitudeAccuracy:null,heading:null,speed:null}},timestamp:Date.now()}};
+    function fakeGetCurrentPosition(success,error,options){{
+        if(typeof success==='function'){{setTimeout(function(){{fakePosition.timestamp=Date.now();success(fakePosition);}},50+Math.random()*100);}}
+    }}
+    function fakeWatchPosition(success,error,options){{
+        if(typeof success==='function'){{var id=setInterval(function(){{fakePosition.timestamp=Date.now();success(fakePosition);}},3000);return id;}}
+        return 0;
+    }}
+    function fakeClearWatch(id){{clearInterval(id);}}
+    if(navigator.geolocation){{
+        stealthDefine(navigator.geolocation,'getCurrentPosition',{{value:disguiseFunction(fakeGetCurrentPosition,'getCurrentPosition'),writable:false}});
+        stealthDefine(navigator.geolocation,'watchPosition',{{value:disguiseFunction(fakeWatchPosition,'watchPosition'),writable:false}});
+        stealthDefine(navigator.geolocation,'clearWatch',{{value:disguiseFunction(fakeClearWatch,'clearWatch'),writable:false}});
+    }}
+    if(navigator.permissions&&navigator.permissions.query){{
+        var origPermissionsQuery=navigator.permissions.query.bind(navigator.permissions);
+        var newPermissionsQuery=disguiseFunction(function(permissionDesc){{
+            if(permissionDesc&&permissionDesc.name==='geolocation'){{return Promise.resolve({{state:'granted',onchange:null}});}}
+            return origPermissionsQuery(permissionDesc);
+        }},'query');
+        stealthDefine(navigator.permissions,'query',{{value:newPermissionsQuery,writable:false}});
+    }}
+}})();"""
+
+
+def _has_restrictive_csp(csp_value: str) -> bool:
+    """Return True if CSP has script-src 'none' (sole source) or require-trusted-types-for 'script'."""
+    if not csp_value:
+        return False
+    lower = csp_value.lower()
+    # Check require-trusted-types-for 'script'
+    if "require-trusted-types-for" in lower and "'script'" in lower:
+        return True
+    # Check script-src 'none' as the sole source (not mixed with others)
+    # Find script-src directive
+    for directive in lower.split(";"):
+        directive = directive.strip()
+        if directive.startswith("script-src"):
+            parts = directive.split()
+            # parts[0] == 'script-src', rest are sources
+            sources = parts[1:]
+            if sources == ["'none'"]:
+                return True
+    return False
+
+
 def _generate_nonce() -> str:
     """Generate a cryptographically random nonce for CSP."""
     return secrets.token_urlsafe(16)
@@ -129,6 +193,7 @@ class GeoFixAddon:
         self._lock = threading.Lock()
         self._preset = preset
         self._js_payload = _build_js_payload(preset)
+        self._geo_only_payload = _build_geo_only_payload(preset)
         self._last_flow_time: float = 0.0
 
     @property
@@ -141,6 +206,7 @@ class GeoFixAddon:
         with self._lock:
             self._preset = preset
             self._js_payload = _build_js_payload(preset)
+            self._geo_only_payload = _build_geo_only_payload(preset)
             logger.info("Switched to preset: %s", preset.code)
 
     def request(self, flow: http.HTTPFlow) -> None:
@@ -148,33 +214,42 @@ class GeoFixAddon:
         with self._lock:
             self._last_flow_time = time.monotonic()  # track ALL traffic for idle guard
             accept_lang = self._preset.accept_language
+
+        # Geolocation API intercept
+        if (flow.request.host == 'www.googleapis.com' and
+                flow.request.path == '/geolocation/v1/geolocate' and
+                flow.request.method == 'POST'):
+            try:
+                with self._lock:
+                    lat = self._preset.latitude
+                    lon = self._preset.longitude
+                accuracy = random.randint(40, 80)
+                body = json.dumps({"location": {"lat": lat, "lng": lon}, "accuracy": accuracy})
+                flow.response = http.Response.make(200, body.encode(), {"Content-Type": "application/json"})
+                logger.info("Intercepted geolocation API request → fake response (accuracy=%d)", accuracy)
+                return
+            except Exception as e:
+                logger.error("Geolocation API intercept failed: %s", e)
+
         flow.request.headers["Accept-Language"] = accept_lang
 
     def response(self, flow: http.HTTPFlow) -> None:
-        """For target domains: inject JS payload with CSP nonce into HTML responses."""
+        """Inject JS payload into HTML responses. Full payload for target domains, geo-only for others."""
         if flow.response is None:
             return
 
-        # Check if target domain
-        host = flow.request.host
-        if not is_target_domain(host):
-            return
-
-        # Only inject into HTML responses
+        # Common HTML gating
         content_type = flow.response.headers.get("content-type", "")
         if "text/html" not in content_type.lower():
             return
 
-        # Skip large responses
         if flow.response.content and len(flow.response.content) > MAX_INJECT_SIZE:
             return
 
-        # Skip non-200 responses
         if flow.response.status_code != 200:
             return
 
         try:
-            # mitmproxy auto-decodes gzip/brotli when accessing .text
             html_text = flow.response.text
         except (ValueError, UnicodeDecodeError):
             return
@@ -182,26 +257,40 @@ class GeoFixAddon:
         if not html_text:
             return
 
-        # Find injection point
         inject_pos = _find_inject_position(html_text)
 
-        # Generate nonce and build script tag
-        nonce = _generate_nonce()
-        with self._lock:
-            js_payload = self._js_payload
+        host = flow.request.host
+        is_target = is_target_domain(host)
 
-        script_tag = f'\n<script nonce="{nonce}">{js_payload}</script>\n'
-
-        # Inject JS
-        modified_html = html_text[:inject_pos] + script_tag + html_text[inject_pos:]
-        flow.response.text = modified_html
-
-        # Modify enforcing CSP header only (not report-only)
-        if "content-security-policy" in flow.response.headers:
-            original_csp = flow.response.headers["content-security-policy"]
-            flow.response.headers["content-security-policy"] = _modify_csp(original_csp, nonce)
-
-        logger.debug("Injected JS into %s (nonce: %s)", flow.request.url, nonce[:8])
+        if is_target:
+            # Full injection path (unchanged)
+            nonce = _generate_nonce()
+            with self._lock:
+                js_payload = self._js_payload
+            script_tag = f'\n<script nonce="{nonce}">{js_payload}</script>\n'
+            modified_html = html_text[:inject_pos] + script_tag + html_text[inject_pos:]
+            flow.response.text = modified_html
+            if "content-security-policy" in flow.response.headers:
+                original_csp = flow.response.headers["content-security-policy"]
+                flow.response.headers["content-security-policy"] = _modify_csp(original_csp, nonce)
+            logger.debug("Injected JS into %s (nonce: %s)", flow.request.url, nonce[:8])
+        else:
+            # Non-target: check for restrictive CSP
+            csp = flow.response.headers.get("content-security-policy", "")
+            if csp and _has_restrictive_csp(csp):
+                logger.debug("Skipping injection on %s — restrictive CSP", host)
+                return
+            # Inject geo-only payload
+            nonce = _generate_nonce()
+            with self._lock:
+                geo_payload = self._geo_only_payload
+            script_tag = f'\n<script nonce="{nonce}">{geo_payload}</script>\n'
+            modified_html = html_text[:inject_pos] + script_tag + html_text[inject_pos:]
+            flow.response.text = modified_html
+            if "content-security-policy" in flow.response.headers:
+                original_csp = flow.response.headers["content-security-policy"]
+                flow.response.headers["content-security-policy"] = _modify_csp(original_csp, nonce)
+            logger.debug("Injected geo-only JS into %s (nonce: %s)", flow.request.url, nonce[:8])
 
 
 class FlowCleanup:

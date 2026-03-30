@@ -195,6 +195,21 @@
         });
     }
 
+    // === 2b. Permissions Override ===
+    if (navigator.permissions && navigator.permissions.query) {
+        var origPermissionsQuery = navigator.permissions.query.bind(navigator.permissions);
+        var newPermissionsQuery = disguiseFunction(function(permissionDesc) {
+            if (permissionDesc && permissionDesc.name === 'geolocation') {
+                return Promise.resolve({state: 'granted', onchange: null});
+            }
+            return origPermissionsQuery(permissionDesc);
+        }, 'query');
+        stealthDefine(navigator.permissions, 'query', {
+            value: newPermissionsQuery,
+            writable: false
+        });
+    }
+
     // === 3. Language Override ===
 
     stealthDefineGetter(Navigator.prototype, 'language', function() {
