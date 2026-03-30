@@ -41,14 +41,19 @@ After completing security-hardening (T-1 through T-12), two analyst agents revie
 
 **Risk:** If mitmproxy crashes and restarts within the same session — new CA cannot be generated because key file is gone. Mitigation: this is acceptable — geo-fix should perform full cleanup and exit, not try to restart mitmproxy silently.
 
-### D-2: Cleanup failure notification (R-4)
+### D-2: Robust cleanup with retry, startup check, and fallback (R-4)
 
-**Approach:**
-- `cleanup()` collects a list of failed operations (try/except around each step)
-- Returns `list[str]` of failures (empty = success)
-- `_do_cleanup()` in main.py checks the list; if non-empty, prints user-visible message:
-  "Не удалось полностью очистить: [список]. Запустите `geo-fix --cleanup`."
-- For tray-based shutdown: show a Windows toast notification via tray icon
+**Problem:** If cleanup fails, retrying immediately is pointless — the cause (locked resource, hung process) is likely still present. But it often resolves after a short delay or by next launch.
+
+**Approach — 3 layers (in order):**
+
+1. **Retry with delay:** Each cleanup step that fails gets retried once after 3-second pause. Covers transient locks (certutil busy, registry locked by another process).
+
+2. **User notification:** If retry also failed, immediately notify user what remains (stderr + tray toast). User likely won't act on this, but should be informed.
+
+3. **Startup cleanup:** On next launch, geo-fix checks for leftover artifacts from previous sessions (stale firewall rules by prefix, proxy settings in registry, CA cert in store). Removes them before starting new session. This is the real safety net — user just needs to launch geo-fix again, which they will do anyway.
+
+**Cleanup state persistence:** Write a `cleanup_pending.json` to app data dir on failure (list of failed operations). On next startup, read and process it. Delete after successful cleanup.
 
 ### D-3: Periodic VPN monitoring (R-5)
 
@@ -91,18 +96,22 @@ After completing security-hardening (T-1 through T-12), two analyst agents revie
 - test_delete_ca_public_cert_removes_cert
 - test_mitmproxy_works_after_key_deletion (integration, start proxy, delete key, make TLS connection)
 
-### Task 2: Cleanup failure notification (R-4)
+### Task 2: Robust cleanup with retry, startup check, and fallback (R-4)
 
 **Files:** src/system_config.py, src/main.py
 **What:**
-1. Refactor `cleanup()` to wrap each step in try/except, collect failures in a list
+1. Refactor `cleanup()` to wrap each step in try/except; on failure, wait 3s and retry once; collect still-failed operations in a list
 2. Return `list[str]` from cleanup()
-3. In `_do_cleanup()`: if failures, print to stderr and log
-4. In tray shutdown path: show notification via tray
+3. On failure: write `cleanup_pending.json` to app data dir with list of failed operations
+4. Add `check_pending_cleanup()` — called on startup, reads `cleanup_pending.json`, executes pending operations, deletes file on success
+5. In `_do_cleanup()`: if failures remain after retry, notify user (stderr + tray toast) about what couldn't be cleaned
+6. On startup: call `check_pending_cleanup()` before initializing new session
 **Tests:**
+- test_cleanup_retries_on_failure
 - test_cleanup_returns_empty_on_success
-- test_cleanup_returns_failures_on_partial_error
-- test_do_cleanup_prints_failures_to_user
+- test_cleanup_writes_pending_json_on_failure
+- test_startup_cleans_pending_operations
+- test_do_cleanup_notifies_user_on_persistent_failure
 
 ### Task 3: Periodic VPN monitoring + watchdog health (R-5, W-1)
 

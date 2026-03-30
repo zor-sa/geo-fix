@@ -1,0 +1,91 @@
+{
+  "validator": "reality-checker",
+  "iteration": 2,
+  "batch": [1, 2, 3, 4],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_function",
+      "task": 2,
+      "issue": "cleanup() has annotation '-> None' in source (line 653 of system_config.py) but actually executes 'return failures' at line 720. Task 2 says to fix annotation to '-> list[str]' — this is a real mismatch that must be corrected. The task correctly identifies it, but the fix is not yet applied. The caller in _do_cleanup() uses 'cleanup(state) or []' as a guard, which works but masks the type lie.",
+      "fix": "Change def cleanup(...) -> None: to -> list[str]: in system_config.py as part of Task 2 implementation. This is already described in the task Details section — verify it is not skipped."
+    },
+    {
+      "severity": "major",
+      "category": "missing_function",
+      "task": 2,
+      "issue": "check_pending_cleanup() and write_cleanup_pending() do not exist in src/system_config.py or src/main.py. The task correctly describes them as new additions. However, the import block in main.py (lines 37-55) does not yet include them. Task 2 step 7 says 'Update imports in main.py' — this is necessary but the exact import statement must be verified against what gets exported from system_config. No issue with the task description itself, but verifying the imports block will need updating.",
+      "fix": "When implementing Task 2, add write_cleanup_pending and check_pending_cleanup to the import block in main.py at lines 37-55. The current block imports cleanup, load_state, etc. — the new functions must be added there, not via a separate import statement later in the file."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 2,
+      "issue": "Details section for _do_cleanup() says: 'add a module-level _tray = None reference and assign _tray = tray immediately after tray = GeoFixTray(...) at line 586'. However, no such _tray module-level variable exists in main.py currently (only _cleanup_done, _cleanup_lock, _watchdog_proc, _stop_token, _session_tmpdir are defined as module globals at lines 64-68). This is new state the task introduces. The task description is accurate that it is new. But the tray notification path is guarded by 'if _tray is not None' in the edge cases — since Task 2 acceptance criteria does NOT include actually calling tray.notify() (it says 'use stderr print only for now'), the _tray reference is pre-wiring for a future task. The task should clarify that _tray.notify() is NOT called in Task 2 scope, only stderr. Currently line 97 says both: 'show a tray toast notification' and then later 'Note: GeoFixTray has no notify() method yet — use stderr print only'. This is contradictory in the same paragraph.",
+      "fix": "Clarify Task 2 step 5: remove 'tray toast notification' from the What-to-do list. Keep it in the Details note. The _tray module-level variable can still be added as pre-wiring but the notify() call should not be attempted. The acceptance criterion already correctly says 'prints cleanup failure details to stderr' — the What-to-do step should match."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 3,
+      "issue": "_monitor_loop() is confirmed to be a closure inside main() at line 593 (def _monitor_loop(): nested inside the function). Task 3 correctly acknowledges this and mentions extraction into a module-level _monitor_tick() helper. The patch target 'src.main._spawn_watchdog' is now specified and is correct — _spawn_watchdog is a module-level function at line 151. The round 1 fix is verified.",
+      "fix": "No action needed. Round 1 fix is correct."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 3,
+      "issue": "Test path test/unit/test_monitor.py is used in Task 3. The test/unit/ directory exists and contains test files. This is consistent. However, Task 3 step 4 also references 'pytest test/ -v --ignore=test/test_e2e_browser.py' but the actual E2E test files in the directory are test_e2e_browser.py and test_e2e_security.py — the full suite exclusion only ignores one of them. This is a minor omission in the verification command, not a blocking issue.",
+      "fix": "Consider ignoring both test_e2e_browser.py and test_e2e_security.py in the verification command to avoid running slow E2E tests during unit validation."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Task 2 step 6 says to call check_pending_cleanup() in main() 'around line 486, after stale state cleanup but before create_session_tmpdir()'. The actual stale state cleanup block is at lines 486-489 (load_state, cleanup(stale)). The instruction to insert after stale cleanup is feasible. However check_pending_cleanup() at startup would run before stale cleanup — the ordering matters because stale cleanup itself could generate pending entries. The task should confirm the intended ordering: stale cleanup first, then check_pending_cleanup(), then create_session_tmpdir().",
+      "fix": "Minor ambiguity only. The implementation should call check_pending_cleanup() after the existing stale state cleanup block (after line 489), not before it."
+    },
+    {
+      "severity": "minor",
+      "category": "reality",
+      "task": 1,
+      "issue": "Task 1 Details mentions 'Existing test file: test/test_ca_key_deletion.py already exists — read it first to identify existing coverage'. This file is confirmed to exist at test/test_ca_key_deletion.py. The task correctly tells the implementer to read it before writing new tests. This is good but the task does not state what tests are already there, leaving the implementer to discover potential duplicates at runtime.",
+      "fix": "No blocking issue. The instruction to read the file first is correct. Implementer should check test_ca_key_deletion.py for existing coverage before writing test/unit/test_delete_ca_key_files.py."
+    }
+  ],
+  "round1_fixes_verified": {
+    "task2_tray_notify_removed": {
+      "status": "partial",
+      "note": "tray.notify() is absent from the implementation path (GeoFixTray has no notify() method confirmed). Task 2 description now says 'use stderr print only for now'. However, What-to-do step 5 still mentions 'show a tray toast notification listing what couldn't be cleaned' before clarifying in the Details that notify() does not exist yet. The contradiction remains — round 1 fix was applied to Details but not to the What-to-do step."
+    },
+    "task2_cleanup_return_type_fixed": {
+      "status": "verified",
+      "note": "Task 2 explicitly says to fix '-> None' annotation to '-> list[str]'. The source code at line 653 still has '-> None' annotation — the fix is described as part of the task, not pre-applied. Task description is accurate."
+    },
+    "task2_stateless_variant_wording": {
+      "status": "verified",
+      "note": "check_pending_cleanup() note says 'it has no ProxyState object at startup, so call functions in their stateless mode'. uninstall_ca_cert(thumbprint=None) signature confirmed to exist (line 451 of system_config.py). The stateless call pattern is valid."
+    },
+    "task3_monitor_loop_closure_acknowledged": {
+      "status": "verified",
+      "note": "_monitor_loop is confirmed to be a closure inside main() at line 593. Task 3 now explicitly says 'The function is currently a closure inside main() — to make it unit-testable, extract it to module level as _monitor_tick()'. Round 1 fix is in place."
+    },
+    "task3_spawn_watchdog_patch_target": {
+      "status": "verified",
+      "note": "Patch target 'src.main._spawn_watchdog' is now specified. _spawn_watchdog is confirmed at line 151 of main.py as a module-level function. The patch target is correct."
+    },
+    "task4_test_path": {
+      "status": "verified",
+      "note": "Task 4 uses test/test_system_config.py. The test/ directory exists and test_system_config.py already exists there. The path is correct and consistent with round 1 fix."
+    }
+  },
+  "stats": {
+    "tasks_checked": 4,
+    "claims_verified": 41,
+    "issues_found": 7,
+    "critical": 0,
+    "major": 3,
+    "minor": 4
+  }
+}
