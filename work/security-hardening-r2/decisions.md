@@ -6,6 +6,30 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 
 <!-- Entries are added by agents as tasks are completed. -->
 
+## Task 1: Delete CA key file after mitmproxy loads it
+
+**Status:** Done
+**Commit:** a2d157e
+**Agent:** coder-ca-keys
+**Summary:** Wrote 5 unit tests for `delete_ca_key_files` and `delete_ca_public_cert` in `test/unit/test_delete_ca_key_files.py` covering file removal, public cert preservation, and idempotency. Wrote 1 integration test in `test/test_integration_ca_key_deletion.py` confirming mitmproxy remains functional after CA key files deleted from disk. Key decision: kept TDD-anchor-mandated tests in `test/unit/` despite partial overlap with existing `test/test_ca_key_deletion.py` — task spec was explicit about file location and test names.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions, 2 major + 3 minor → [logs/working/task-1/code-reviewer-round1.json]
+- security-auditor: approved, 2 minor → [logs/working/task-1/security-auditor-round1.json]
+- test-reviewer: needs_improvement, 1 major + 2 minor → [logs/working/task-1/test-reviewer-round1.json]
+
+*Round 2 (after fixes):*
+- code-reviewer: approved → [logs/working/task-1/code-reviewer-round2.json]
+- test-reviewer: passed → [logs/working/task-1/test-reviewer-round2.json]
+
+**Verification:**
+- `pytest test/unit/test_delete_ca_key_files.py -v` → 5 passed
+- `pytest test/test_integration_ca_key_deletion.py -v` → 1 skipped (Linux; passes on Windows CI)
+- `pytest test/ -v -k "ca_key or ca_public or key_deletion"` → 14 passed, 1 skipped
+
 ## Task 4: Firewall cleanup by prefix
 
 **Status:** Done
