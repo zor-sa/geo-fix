@@ -604,6 +604,90 @@ def remove_firewall_rules() -> None:
         logger.info("Firewall rules removed (fallback method)")
 
 
+# === Location Services ===
+
+_LOCATION_KEY_PATH = (
+    r"SOFTWARE\Microsoft\Windows\CurrentVersion\DeviceAccess\Global"
+    r"\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}"
+)
+_LOCATION_VALUE_NAME = "Value"
+_LOCATION_VALID_VALUES = frozenset({"Allow", "Deny"})
+
+
+def disable_location_services() -> Optional[str]:
+    """Disable Windows Location Services by writing 'Deny' to the registry.
+
+    Returns the original value ('Allow', 'Deny', or None if key/value was absent).
+    Returns None without raising on non-Windows or if a registry error occurs.
+    """
+    if sys.platform != "win32":
+        return None
+
+    import winreg
+
+    original: Optional[str] = None
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            _LOCATION_KEY_PATH,
+            0,
+            winreg.KEY_READ | winreg.KEY_SET_VALUE,
+        ) as key:
+            try:
+                original = winreg.QueryValueEx(key, _LOCATION_VALUE_NAME)[0]
+            except FileNotFoundError:
+                original = None
+
+            winreg.SetValueEx(key, _LOCATION_VALUE_NAME, 0, winreg.REG_SZ, "Deny")
+            logger.info(
+                "Location Services disabled (original value: %r)", original
+            )
+    except OSError as exc:
+        logger.warning("Could not disable Location Services: %s", exc)
+        return None
+
+    return original
+
+
+def restore_location_services(original: Optional[str]) -> None:
+    """Restore Windows Location Services to its original registry value.
+
+    If *original* is None, the registry value is deleted (restoring the
+    state where the value was absent).  Invalid values fall back to 'Deny'
+    with a warning.
+    """
+    if sys.platform != "win32":
+        return
+
+    import winreg
+
+    if original not in _LOCATION_VALID_VALUES and original is not None:
+        logger.warning(
+            "restore_location_services: unexpected value %r, defaulting to 'Deny'",
+            original,
+        )
+        original = "Deny"
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            _LOCATION_KEY_PATH,
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            if original is None:
+                try:
+                    winreg.DeleteValue(key, _LOCATION_VALUE_NAME)
+                except FileNotFoundError:
+                    pass
+                logger.info("Location Services registry value deleted")
+            else:
+                winreg.SetValueEx(key, _LOCATION_VALUE_NAME, 0, winreg.REG_SZ, original)
+                logger.info("Location Services restored to %r", original)
+    except OSError as exc:
+        logger.warning("Could not restore Location Services: %s", exc)
+
+
 # === Cleanup Persistence ===
 
 _VALID_CLEANUP_LABELS = frozenset({
