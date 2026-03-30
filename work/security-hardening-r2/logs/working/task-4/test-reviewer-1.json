@@ -1,0 +1,35 @@
+{
+  "status": "needs_improvement",
+  "summary": "Three tests cover the core prefix-cleanup behaviors adequately. Test 1 and Test 2 are solid with strong behavioral assertions and pass the litmus test. Test 3 deviates from the TDD anchor: it mocks _list_firewall_rules_by_prefix directly instead of raising a subprocess exception, leaving the exception-handling code path in _list_firewall_rules_by_prefix (lines 551–553) completely untested. One minor weak assertion also present in Test 3.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "test/test_system_config.py:156 (test_remove_by_prefix_fallback_on_parse_error)",
+      "issue": "Test name and TDD anchor both specify 'fallback on parse error', meaning subprocess.run should raise an exception to trigger the except branch in _list_firewall_rules_by_prefix (lines 551-553). Instead the test mocks _list_firewall_rules_by_prefix directly to return []. This exercises the fallback path in remove_firewall_rules(), but the exception-handling code inside _list_firewall_rules_by_prefix is never exercised. If lines 551-553 were deleted or the exception was accidentally re-raised, this test would not catch it.",
+      "recommendation": "Add a companion test (or replace this one) that patches subprocess.run to raise subprocess.TimeoutExpired or OSError on the 'show rule name=all' call — do NOT mock _list_firewall_rules_by_prefix itself. Then call remove_firewall_rules() and assert (a) it does not raise, (b) delete calls are made for the fixed-list fallback. Example:\n\n  @patch('src.system_config.sys.platform', 'win32')\n  @patch('src.system_config.subprocess.run')\n  def test_remove_by_prefix_fallback_on_subprocess_exception(self, mock_run):\n      mock_run.side_effect = [subprocess.TimeoutExpired('netsh', 30), MagicMock(), ...]\n      remove_firewall_rules()\n      delete_calls = [c for c in mock_run.call_args_list if 'delete' in str(c)]\n      assert len(delete_calls) == len(BROWSER_EXES) * len(STUN_PORTS)"
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "test/test_system_config.py:168 (test_remove_by_prefix_fallback_on_parse_error)",
+      "issue": "The assertion `any(f'name={expected_name}' in str(c) for c in delete_calls)` serializes call objects to strings and performs substring matching. This can produce false positives if the string representation of a different call happens to contain the same substring. The call count check above it provides the real safety, but this secondary assertion is weaker than it looks.",
+      "recommendation": "Replace string-in-string check with direct call args verification:\n\n  mock_run.assert_any_call(\n      ['netsh', 'advfirewall', 'firewall', 'delete', 'rule', f'name={expected_name}'],\n      capture_output=True, text=True, timeout=10,\n  )"
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 1,
+    "litmusTest": {
+      "checked": 3,
+      "passed": 3,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 3,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

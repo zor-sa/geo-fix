@@ -1,0 +1,41 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 3,
+    "critical": 0,
+    "major": 0,
+    "minor": 3
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "A03: Injection",
+      "title": "No test for rule names with special characters in netsh output",
+      "description": "The implementation parses rule names from netsh output and embeds them as f\"name={rule_name}\" in subprocess list args. Since shell=True is not used, shell injection is not possible. However, there is no test covering rule names that contain characters like newlines, null bytes, or colons — which could affect the line-based parser in _list_firewall_rules_by_prefix (specifically the split(':', 1) call).",
+      "location": "test/test_system_config.py::TestFirewallPrefixCleanup::test_list_rules_parses_netsh_output",
+      "impact": "If a rule name contained a colon, the parser would split incorrectly. In practice, netsh rule names cannot contain colons, so this is theoretical.",
+      "recommendation": "Add an edge-case to NETSH_OUTPUT: a rule name with a colon (e.g., 'geo-fix-webrtc:special') to ensure split(':', 1) handles it correctly, or add a comment explaining why colons are impossible in Windows firewall rule names.",
+      "cwe": "CWE-20"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "No test verifies audit logging of firewall rule deletions",
+      "description": "Firewall rule deletion is a security-relevant operation. The implementation logs at logger.info level for successful deletions and logger.warning for failures. The tests do not assert that logging occurs, so a future refactor could silently remove the audit trail.",
+      "location": "test/test_system_config.py::TestFirewallPrefixCleanup::test_remove_by_prefix_deletes_found_rules",
+      "impact": "Loss of audit trail for firewall modifications if logging is removed in a future refactor.",
+      "recommendation": "Add a patch for the logger and assert logger.info is called with the count of deleted rules after remove_firewall_rules() completes.",
+      "cwe": "CWE-778"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "Fallback path silently discards all exceptions — not covered by tests",
+      "description": "In remove_firewall_rules(), the fallback loop (when prefix query returns empty) uses bare 'except Exception: pass', suppressing all errors silently. The test test_remove_by_prefix_fallback_on_parse_error does not verify this silent-failure behavior. If netsh delete fails in fallback mode, the user receives no notification and no log entry.",
+      "location": "src/system_config.py:587-588 (implementation), test/test_system_config.py::test_remove_by_prefix_fallback_on_parse_error (test gap)",
+      "impact": "Firewall rules may survive cleanup silently during fallback, leaving WebRTC STUN blocking disabled without user notification.",
+      "recommendation": "Change the fallback exception handler from 'pass' to 'logger.warning(...)'. Add a test that verifies a warning is logged when the fallback delete call raises an exception.",
+      "cwe": "CWE-390"
+    }
+  ]
+}
