@@ -1,6 +1,6 @@
 ---
 created: 2026-03-30
-status: draft
+status: approved
 type: feature
 size: M
 ---
@@ -18,42 +18,48 @@ VPN + текущий geo-fix скрывают IP и подменяют timezone/
 ## Как должно работать
 
 1. Пользователь запускает geo-fix как обычно (`geo-fix US`)
-2. geo-fix отключает Windows Location Services через реестр (HKCU) — ни один процесс текущего пользователя не может использовать WiFi-сканирование для определения местоположения
+2. geo-fix сохраняет текущее значение Windows Location Services и отключает его через HKCU реестр — WiFi-сканирование для определения местоположения блокируется для текущего пользователя
 3. JS-инъекция navigator.geolocation теперь работает на ВСЕХ доменах, не только на Google — любой сайт получает поддельные координаты
-4. Если JS-инъекция не сработала (нестандартная CSP, ошибка), прокси перехватывает запрос к googleapis.com/geolocation и возвращает поддельные координаты
-5. navigator.permissions.query({name: 'geolocation'}) возвращает состояние, согласованное с подменой
-6. При остановке geo-fix Windows Location Services восстанавливается, реестр возвращается в исходное состояние
+4. Если JS-инъекция не сработала (нестандартная CSP), прокси перехватывает запрос к googleapis.com/geolocation и возвращает поддельные координаты (defense-in-depth)
+5. navigator.permissions.query({name: 'geolocation'}) возвращает `{state: 'granted'}` — согласовано с подменой
+6. При остановке geo-fix Windows Location Services восстанавливается в исходное состояние (если было отключено до запуска — остаётся отключённым)
 
 ## Критерии приёмки
 
-- [ ] Windows Location Services отключается через HKCU реестр при запуске geo-fix
-- [ ] Windows Location Services восстанавливается при остановке (включая аварийное завершение через cleanup resilience)
+- [ ] Windows Location Services отключается через HKCU реестр при запуске geo-fix (оригинальное значение сохраняется для восстановления)
+- [ ] Windows Location Services восстанавливается в исходное состояние при остановке (включая аварийное завершение через cleanup resilience)
+- [ ] Если HKCU путь не работает на данной версии Windows — логируется предупреждение, работа продолжается (не блокирует запуск)
 - [ ] JS-инъекция navigator.geolocation работает на всех доменах (не только TARGET_DOMAINS)
+- [ ] На нецелевых доменах инъектируется только geolocation-override (без timezone/language payload), чтобы снизить риск CSP-конфликтов
 - [ ] navigator.geolocation.getCurrentPosition() возвращает поддельные координаты на произвольном домене
-- [ ] navigator.permissions.query({name: 'geolocation'}) переопределён и возвращает корректное состояние
-- [ ] Запросы к googleapis.com/geolocation/v1/geolocate перехватываются прокси и возвращают поддельные координаты
+- [ ] navigator.permissions.query({name: 'geolocation'}) возвращает `{state: 'granted'}` на всех доменах
+- [ ] Запросы к googleapis.com/geolocation/v1/geolocate перехватываются прокси и возвращают JSON с поддельными координатами текущего пресета
+- [ ] Если прокси-перехват geolocation API вызывает ошибку — она логируется, запрос пропускается без изменений (не ломает страницу)
 - [ ] Очистка реестра Location Services интегрирована в существующий cleanup с retry + cleanup_pending.json
 - [ ] Существующие тесты не сломаны
 
 ## Ограничения
 
 - Только Windows 10/11 — реестр Location Services специфичен для Windows
-- Только браузерный трафик через прокси — десктопные приложения (Windows Maps, Cortana) обходят прокси и не покрываются
+- Cross-origin iframes имеют собственный JS-контекст — geolocation override в них работает только если iframe-ответ тоже прошёл через прокси и получил инъекцию
 - WiFi-сканирование невозможно протестировать без реального оборудования — только юнит-тесты на уровне реестра и JS-override
-- Расширение JS-инъекции на все домены увеличивает вероятность CSP-конфликтов на сайтах со строгой Content Security Policy
+- Расширение JS-инъекции на все домены увеличивает объём обработки ответов прокси — необходимо контролировать performance impact
+- Уже открытые вкладки не получат инъекцию до перезагрузки страницы
 
 ## Риски
 
-- **CSP-конфликты на нецелевых доменах:** Расширение JS-инъекции на все HTML-ответы может сломать страницы со строгой CSP, которую _modify_csp() не предусматривает. **Митигация:** Инъекция только минимального geolocation-override (не полного payload) на нецелевых доменах. Если CSP-модификация невозможна — пропускаем страницу, прокси-перехват остаётся как fallback.
-- **Пользователь забывает про десктопные приложения:** Windows Maps или погодные виджеты продолжают использовать реальную геолокацию через сервисы ОС. **Митигация:** Отключение Windows Location Services через реестр блокирует этот вектор системно. Документировать ограничение.
+- **CSP-конфликты на нецелевых доменах:** Расширение JS-инъекции на все HTML-ответы может сломать страницы со строгой CSP. **Митигация:** На нецелевых доменах инъектируется минимальный geolocation-only payload. Если CSP-модификация невозможна — страница пропускается без инъекции, прокси-перехват остаётся как fallback.
+- **HKCU реестр может не работать на всех версиях Windows:** Путь для отключения Location Services может отличаться между Windows 10/11 редакциями. **Митигация:** Исследовать корректный HKCU путь в tech-spec. Если надёжного HKCU пути нет — реализовать только JS + proxy layers, документировать как ограничение.
+- **Performance degradation:** Обработка и декодирование каждого HTML-ответа (не только target domains) увеличивает нагрузку на прокси. **Митигация:** Минимальный payload на нецелевых доменах, мониторинг через существующий RAM watchdog.
 
 ## Технические решения
 
-- Отключаем Windows Location Services через HKCU реестр (`DeviceAccess\Global\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}` → `Deny`), потому что это блокирует WiFi-сканирование системно без прав администратора.
+- Отключаем Windows Location Services через HKCU реестр, потому что это блокирует WiFi-сканирование системно без прав администратора. Точный путь реестра определяется в tech-spec после верификации.
 - Расширяем JS-инъекцию geolocation на все домены, потому что target-only оставляет утечку на любом нецелевом сайте.
+- На нецелевых доменах инъектируем только geolocation + permissions override (без timezone/language), потому что полный payload увеличивает CSP-конфликты и performance cost без пользы.
 - Добавляем перехват googleapis.com/geolocation на уровне прокси как defense-in-depth, потому что JS-инъекция может не сработать из-за CSP.
-- Переопределяем navigator.permissions.query для geolocation, потому что несогласованное состояние permissions — дополнительный вектор fingerprinting.
-- Не покрываем Microsoft Location Service (dev.virtualearth.net) отдельно, потому что отключение Windows Location Services через реестр блокирует оба сервиса системно.
+- Переопределяем navigator.permissions.query для geolocation с результатом `{state: 'granted'}`, потому что несогласованное состояние permissions — вектор fingerprinting.
+- Не покрываем Microsoft Location Service (dev.virtualearth.net) отдельно на уровне прокси, потому что отключение Windows Location Services через реестр блокирует оба сервиса системно.
 
 ## Тестирование
 
@@ -69,13 +75,13 @@ VPN + текущий geo-fix скрывают IP и подменяют timezone/
 
 | Шаг | Инструмент | Ожидаемый результат |
 |-----|-----------|-------------------|
-| 1. Юнит-тесты реестра Location Services | pytest | set/unset записывают правильные значения в мок реестра |
+| 1. Юнит-тесты реестра Location Services | pytest | set/unset сохраняют и восстанавливают оригинальное значение в мок реестра |
 | 2. Юнит-тесты cleanup с новым label | pytest | retry + pending file работают для Location Services |
-| 3. Интеграция: geolocation override на нецелевом домене | pytest + mitmproxy | navigator.geolocation возвращает fake coords на example.com |
-| 4. Интеграция: перехват geolocation API | pytest + mitmproxy | POST к googleapis.com/geolocation возвращает fake coords |
-| 5. Юнит-тесты navigator.permissions override | pytest | permissions.query({name:'geolocation'}) возвращает spoofed state |
+| 3. Интеграция: geolocation override на нецелевом домене | pytest + mitmproxy | JS-инъекция на example.com содержит geolocation override |
+| 4. Интеграция: перехват geolocation API | pytest + mitmproxy | POST к googleapis.com/geolocation возвращает JSON с fake coords |
+| 5. Юнит-тесты navigator.permissions override | pytest | permissions.query({name:'geolocation'}) возвращает {state:'granted'} |
 | 6. Полный тестовый набор | pytest | все существующие тесты проходят |
 
 ### Пользователь проверяет
 - Открыть browserleaks.com/geo с включённым geo-fix — координаты должны соответствовать выбранной стране, а не реальному местоположению
-- Открыть произвольный сайт с запросом геолокации — должны показываться поддельные координаты
+- Открыть произвольный нецелевой сайт с запросом геолокации — должны показываться поддельные координаты
