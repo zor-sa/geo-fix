@@ -6,6 +6,7 @@ files from disk does not break proxy functionality.
 
 import asyncio
 import socket
+import sys
 import threading
 import time
 
@@ -101,6 +102,7 @@ def _shutdown_proxy(master, loop, thread=None):
         thread.join(timeout=10)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows CI only — uses real mitmproxy confdir")
 class TestMitmproxyAfterKeyDeletion:
     """Integration: proxy remains functional after CA key files deleted from disk."""
 
@@ -127,7 +129,13 @@ class TestMitmproxyAfterKeyDeletion:
             delete_ca_key_files(confdir)
             assert not ca_key.exists(), "CA key should be deleted"
 
-            # Proxy must still accept CONNECT (TLS) connections — key is in memory
+            # Proxy must still accept CONNECT (TLS tunnel) connections.
+            # CONNECT 200 proves the proxy's internal state (event loop, addon
+            # chain, option registry) is intact after key deletion. The CA key
+            # is used for on-the-fly cert generation during the TLS handshake
+            # inside the tunnel — but that requires a trusted CA cert on the
+            # client, which isn't available in CI. CONNECT acceptance is the
+            # strongest assertion possible without client-side CA trust.
             sock = socket.create_connection(("127.0.0.1", port), timeout=10)
             try:
                 sock.sendall(
