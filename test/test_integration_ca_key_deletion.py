@@ -6,7 +6,6 @@ files from disk does not break proxy functionality.
 
 import asyncio
 import socket
-import sys
 import threading
 import time
 
@@ -93,28 +92,11 @@ def _start_proxy_with_confdir(confdir: str, port: int):
 
 def _shutdown_proxy(master, loop, thread=None):
     """Shut down the proxy master, releasing the listening port."""
-    if master and loop:
-        try:
-            from mitmproxy.addons.proxyserver import Proxyserver
-            for addon in master.addons.chain:
-                if isinstance(addon, Proxyserver):
-                    servers = addon.servers
-                    if hasattr(servers, '_instances'):
-                        async def _stop_servers(ps):
-                            for inst in list(ps.servers._instances.values()):
-                                await inst.stop()
-                        future = asyncio.run_coroutine_threadsafe(
-                            _stop_servers(addon), loop
-                        )
-                        future.result(timeout=5)
-                    break
-        except Exception:
-            pass
     if master:
         try:
             master.shutdown()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"shutdown error: {e}")
     if thread:
         thread.join(timeout=10)
 

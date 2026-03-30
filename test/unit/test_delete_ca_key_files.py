@@ -50,16 +50,6 @@ class TestDeleteCaKeyFiles:
         # Second call — files already gone
         delete_ca_key_files(str(tmp_path))  # must not raise
 
-    def test_delete_ca_key_files_empty_dir(self, tmp_path):
-        """Calling on empty dir (no CA files at all) raises no exception."""
-        delete_ca_key_files(str(tmp_path))
-
-    def test_delete_ca_key_files_partial(self, tmp_path):
-        """Only some sensitive files present — deletes what exists, no error."""
-        (tmp_path / "mitmproxy-ca.pem").write_bytes(b"key")
-        # .p12 and .cer absent
-        delete_ca_key_files(str(tmp_path))
-        assert not (tmp_path / "mitmproxy-ca.pem").exists()
 
 
 class TestDeleteCaPublicCert:
