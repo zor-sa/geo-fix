@@ -277,8 +277,10 @@ class TestGeoFixAddon:
         from unittest.mock import patch
         flow = make_flow(host="www.googleapis.com", path="/geolocation/v1/geolocate", method="POST")
         flow.response = None
-        with patch("src.proxy_addon.random.randint", side_effect=RuntimeError("boom")):
+        with patch("src.proxy_addon.random.randint", side_effect=RuntimeError("boom")), \
+             patch("src.proxy_addon.logger") as mock_logger:
             addon.request(flow)
+            mock_logger.error.assert_called_once()
         assert flow.response is None
 
     # --- Response injection tests ---

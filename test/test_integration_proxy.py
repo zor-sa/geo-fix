@@ -8,12 +8,14 @@ survives restart sequences. All tests run on any platform (no Windows-only deps)
 import asyncio
 import gc
 import http.server
+import json as _json
 import socket
 import sys
 import threading
 import time
 import tracemalloc
 import urllib.request
+import urllib.error
 
 import pytest
 
@@ -159,6 +161,31 @@ class _MockHTMLHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         pass  # Suppress request logs
+
+
+class _MockHTMLTargetHandler(http.server.BaseHTTPRequestHandler):
+    """Serves plain HTML (no getTimezoneOffset) for injection tests."""
+
+    def do_GET(self):
+        html = "<html><head><title>Target</title></head><body>Hello</body></html>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html)))
+        self.end_headers()
+        self.wfile.write(html.encode("utf-8"))
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        body = b'{"error": "should not reach server"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
 
 
 class _HostOverrideAddon:
@@ -465,3 +492,113 @@ class TestProxyRestart:
                 sock.close()
         finally:
             _shutdown_proxy(master2, loop2, thread2)
+
+
+class TestNonTargetDomainGeoJS:
+    """Non-target domains receive geo-only JS injection (getCurrentPosition, no getTimezoneOffset)."""
+
+    def test_integration_non_target_domain_gets_geo_js(self):
+        """HTTP request to a non-target domain → body has getCurrentPosition, NOT getTimezoneOffset."""
+        proxy_port = _free_port()
+        mock_port = _free_port()
+
+        httpd = http.server.HTTPServer(("127.0.0.1", mock_port), _MockHTMLTargetHandler)
+        mock_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        mock_thread.start()
+
+        addon = GeoFixAddon(PRESETS["US"])
+        thread, master, loop = _start_proxy(addon, proxy_port)
+
+        try:
+            proxy_handler = urllib.request.ProxyHandler(
+                {"http": f"http://127.0.0.1:{proxy_port}"}
+            )
+            opener = urllib.request.build_opener(proxy_handler)
+            # Request goes through proxy; host is 127.0.0.1 (not a target domain)
+            response = opener.open(f"http://127.0.0.1:{mock_port}/", timeout=10)
+            assert response.status == 200
+            body = response.read().decode("utf-8")
+            assert "getCurrentPosition" in body, \
+                f"Expected getCurrentPosition in body, got: {body[:300]}"
+            assert "getTimezoneOffset" not in body, \
+                f"Expected getTimezoneOffset NOT in body (geo-only payload), got: {body[:300]}"
+        finally:
+            _shutdown_proxy(master, loop, thread)
+            httpd.shutdown()
+
+
+class TestGeolocationAPIPostIntercepted:
+    """POST to googleapis geolocation API is intercepted; real server is never reached."""
+
+    def test_integration_geolocation_api_post_intercepted(self):
+        """POST to www.googleapis.com/geolocation/v1/geolocate → fake 200 JSON with location."""
+        proxy_port = _free_port()
+        mock_port = _free_port()
+
+        # Mock server to detect if request leaks through (it should NOT)
+        httpd = http.server.HTTPServer(("127.0.0.1", mock_port), _MockHTMLTargetHandler)
+        mock_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        mock_thread.start()
+
+        addon = GeoFixAddon(PRESETS["US"])
+        thread, master, loop = _start_proxy(addon, proxy_port)
+
+        try:
+            proxy_handler = urllib.request.ProxyHandler(
+                {"http": f"http://127.0.0.1:{proxy_port}"}
+            )
+            opener = urllib.request.build_opener(proxy_handler)
+            post_data = b'{"homeMobileCountryCode": 310}'
+            req = urllib.request.Request(
+                "http://www.googleapis.com/geolocation/v1/geolocate",
+                data=post_data,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            response = opener.open(req, timeout=10)
+            assert response.status == 200
+            body = _json.loads(response.read().decode("utf-8"))
+            assert "location" in body, f"Missing 'location' key: {body}"
+            assert "lat" in body["location"], f"Missing 'lat': {body}"
+            assert "lng" in body["location"], f"Missing 'lng': {body}"
+            assert "accuracy" in body, f"Missing 'accuracy': {body}"
+            # Values must match the US preset
+            assert body["location"]["lat"] == PRESETS["US"].latitude
+            assert body["location"]["lng"] == PRESETS["US"].longitude
+        finally:
+            _shutdown_proxy(master, loop, thread)
+            httpd.shutdown()
+
+
+class TestTargetDomainFullPayloadRegression:
+    """Target domain HTML gets full payload (includes getTimezoneOffset)."""
+
+    def test_integration_target_domain_full_payload_regression(self):
+        """HTTP request to a target domain (google.com) → body contains getTimezoneOffset."""
+        proxy_port = _free_port()
+        mock_port = _free_port()
+
+        httpd = http.server.HTTPServer(("127.0.0.1", mock_port), _MockHTMLTargetHandler)
+        mock_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        mock_thread.start()
+
+        # Override host so GeoFixAddon sees a target domain
+        host_override = _HostOverrideAddon("www.google.com")
+        addon = GeoFixAddon(PRESETS["US"])
+        thread, master, loop = _start_proxy(
+            host_override, proxy_port, extra_addons=[addon]
+        )
+
+        try:
+            proxy_handler = urllib.request.ProxyHandler(
+                {"http": f"http://127.0.0.1:{proxy_port}"}
+            )
+            opener = urllib.request.build_opener(proxy_handler)
+            response = opener.open(f"http://127.0.0.1:{mock_port}/", timeout=10)
+            assert response.status == 200
+            body = response.read().decode("utf-8")
+            assert "getTimezoneOffset" in body, \
+                f"Expected getTimezoneOffset in full-payload response, got: {body[:300]}"
+        finally:
+            _shutdown_proxy(master, loop, thread)
+            httpd.shutdown()

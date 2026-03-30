@@ -116,23 +116,22 @@ def _build_geo_only_payload(preset: CountryPreset) -> str:
 
 
 def _has_restrictive_csp(csp_value: str) -> bool:
-    """Return True if CSP has script-src 'none' (sole source) or require-trusted-types-for 'script'."""
+    """Return True if CSP has script-src 'none' (sole source) or require-trusted-types-for 'script'.
+
+    Parses directives by splitting on ';' to avoid false positives from
+    substring matches that span multiple directives.
+    """
     if not csp_value:
         return False
-    lower = csp_value.lower()
-    # Check require-trusted-types-for 'script'
-    if "require-trusted-types-for" in lower and "'script'" in lower:
-        return True
-    # Check script-src 'none' as the sole source (not mixed with others)
-    # Find script-src directive
-    for directive in lower.split(";"):
-        directive = directive.strip()
-        if directive.startswith("script-src"):
-            parts = directive.split()
-            # parts[0] == 'script-src', rest are sources
-            sources = parts[1:]
-            if sources == ["'none'"]:
-                return True
+    for directive in csp_value.split(";"):
+        tokens = directive.strip().lower().split()
+        if not tokens:
+            continue
+        name = tokens[0]
+        if name == "require-trusted-types-for" and "'script'" in tokens[1:]:
+            return True
+        if name == "script-src" and tokens[1:] == ["'none'"]:
+            return True
     return False
 
 
@@ -184,6 +183,22 @@ def _modify_csp(csp_value: str, nonce: str) -> str:
             new_directives.append(f"script-src {nonce_value}")
 
     return "; ".join(new_directives)
+
+
+def _inject_script(flow: http.HTTPFlow, html_text: str, inject_pos: int, payload: str) -> None:
+    """Inject a script tag with a fresh nonce into the HTML and update CSP if present.
+
+    Modifies flow.response.text in-place (via the mitmproxy setter).
+    Also rewrites the content-security-policy header when present.
+    """
+    nonce = _generate_nonce()
+    script_tag = f'\n<script nonce="{nonce}">{payload}</script>\n'
+    modified_html = html_text[:inject_pos] + script_tag + html_text[inject_pos:]
+    flow.response.text = modified_html
+    if "content-security-policy" in flow.response.headers:
+        original_csp = flow.response.headers["content-security-policy"]
+        flow.response.headers["content-security-policy"] = _modify_csp(original_csp, nonce)
+    return nonce
 
 
 class GeoFixAddon:
@@ -263,33 +278,19 @@ class GeoFixAddon:
         is_target = is_target_domain(host)
 
         if is_target:
-            # Full injection path (unchanged)
-            nonce = _generate_nonce()
             with self._lock:
                 js_payload = self._js_payload
-            script_tag = f'\n<script nonce="{nonce}">{js_payload}</script>\n'
-            modified_html = html_text[:inject_pos] + script_tag + html_text[inject_pos:]
-            flow.response.text = modified_html
-            if "content-security-policy" in flow.response.headers:
-                original_csp = flow.response.headers["content-security-policy"]
-                flow.response.headers["content-security-policy"] = _modify_csp(original_csp, nonce)
+            nonce = _inject_script(flow, html_text, inject_pos, js_payload)
             logger.debug("Injected JS into %s (nonce: %s)", flow.request.url, nonce[:8])
         else:
-            # Non-target: check for restrictive CSP
+            # Non-target: check for restrictive CSP before injecting
             csp = flow.response.headers.get("content-security-policy", "")
             if csp and _has_restrictive_csp(csp):
                 logger.debug("Skipping injection on %s — restrictive CSP", host)
                 return
-            # Inject geo-only payload
-            nonce = _generate_nonce()
             with self._lock:
                 geo_payload = self._geo_only_payload
-            script_tag = f'\n<script nonce="{nonce}">{geo_payload}</script>\n'
-            modified_html = html_text[:inject_pos] + script_tag + html_text[inject_pos:]
-            flow.response.text = modified_html
-            if "content-security-policy" in flow.response.headers:
-                original_csp = flow.response.headers["content-security-policy"]
-                flow.response.headers["content-security-policy"] = _modify_csp(original_csp, nonce)
+            nonce = _inject_script(flow, html_text, inject_pos, geo_payload)
             logger.debug("Injected geo-only JS into %s (nonce: %s)", flow.request.url, nonce[:8])
 
 
