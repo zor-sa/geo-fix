@@ -154,14 +154,27 @@ class TestFirewallPrefixCleanup:
         )
 
     @patch("src.system_config.sys.platform", "win32")
-    @patch("src.system_config._list_firewall_rules_by_prefix", return_value=[])
     @patch("src.system_config.subprocess.run")
-    def test_remove_by_prefix_fallback_on_parse_error(self, mock_run, mock_list):
-        """When prefix query returns empty, remove_firewall_rules falls back to fixed list."""
+    def test_remove_by_prefix_fallback_on_parse_error(self, mock_run):
+        """When subprocess raises during prefix query, falls back to fixed list."""
+        import subprocess as _subprocess
+
+        def side_effect(cmd, **kwargs):
+            # The "show rule" call raises TimeoutExpired, triggering fallback
+            if "show" in cmd:
+                raise _subprocess.TimeoutExpired(cmd, 30)
+            # Delete calls succeed
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = side_effect
+
         remove_firewall_rules()
 
-        # Should attempt to delete known fixed-list rule names
-        delete_calls = mock_run.call_args_list
+        # Filter out the failed "show" call — remaining are delete calls
+        delete_calls = [
+            c for c in mock_run.call_args_list
+            if "delete" in c[0][0]
+        ]
         assert len(delete_calls) == len(BROWSER_EXES) * len(STUN_PORTS)
 
         # Verify a known fixed-name rule is in the calls via structured args
