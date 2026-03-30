@@ -1,0 +1,9 @@
+feature: security-hardening-r2
+total_waves: 2
+last_completed_wave: 2
+next_wave: done
+tasks:
+  1: {status: done, wave: 1}
+  2: {status: done, wave: 2}
+  3: {status: done, wave: 1}
+  4: {status: done, wave: 1}

@@ -1,0 +1,59 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Refactoring `_monitor_tick` to module level is the right approach for testability. The 5 required tests are present and correctly structured. One behavioral bug found: `last_vpn` is unconditionally updated to `VpnStatus.UNKNOWN`, which breaks the NOT_DETECTED→UNKNOWN→DETECTED restore detection path specified in the edge cases section. One required edge case test (UNKNOWN state) is also missing.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "src/main.py",
+      "line": 469,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "Do not update `last_vpn` when `vpn == VpnStatus.UNKNOWN`. The spec (task 3 Details > Edge Cases) states UNKNOWN must be treated as 'no change'. Current code: `last_vpn = vpn` runs unconditionally, so after UNKNOWN the previous NOT_DETECTED state is lost. Sequence NOT_DETECTED → UNKNOWN → DETECTED: restore message is silently dropped because condition `last_vpn == VpnStatus.NOT_DETECTED` evaluates to False (last_vpn is now UNKNOWN). Fix: wrap the assignment — `if vpn != VpnStatus.UNKNOWN: last_vpn = vpn`",
+      "benefit": "Restore notification is shown correctly after a transient UNKNOWN event when VPN was previously disconnected",
+      "optional": false
+    },
+    {
+      "file": "test/unit/test_monitor.py",
+      "line": 1,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "Add test for UNKNOWN state handling — this edge case is explicitly listed in the task spec. Required test: mock returns UNKNOWN; assert neither warning nor restore message is printed, and that a subsequent DETECTED after NOT_DETECTED still triggers restore (i.e., last_vpn was not overwritten by UNKNOWN). Without this test the UNKNOWN state bug above is invisible.",
+      "benefit": "Catches the UNKNOWN→state-loss bug and documents the intended behavior as an executable spec",
+      "optional": false
+    },
+    {
+      "file": "test/unit/test_monitor.py",
+      "line": 1,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Add test for watchdog respawn failure: mock `_spawn_watchdog` to raise an exception; assert monitor tick does not propagate the exception (loop continues). The task spec and Details section both require this behavior ('Watchdog respawn failure is logged as error but does not crash the monitor loop').",
+      "benefit": "Verifies the exception guard in the watchdog block actually works",
+      "optional": false
+    },
+    {
+      "file": "test/unit/test_monitor.py",
+      "line": 1,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Add test for `_watchdog_proc is None` path: set `main_mod._watchdog_proc = None` before calling `_monitor_tick`; assert `_spawn_watchdog` is not called. The spec calls this out as an edge case ('If _watchdog_proc is None, skip the poll check entirely').",
+      "benefit": "Prevents a future regression where None is dereferenced via `.poll()`",
+      "optional": false
+    },
+    {
+      "file": "src/main.py",
+      "line": 476,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "Move `from src.system_config import STATE_FILE` to the module-level import block at lines 37–54, alongside other `system_config` imports. The inline import pattern is already used at line 582 (first watchdog spawn), but having it in two places is unnecessary churn — one module-level import removes both.",
+      "benefit": "Cleaner imports, consistent with project conventions; avoids repeated lazy imports on every watchdog respawn",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 2,
+    "minorIssuesCount": 3,
+    "testCoverageAssessment": "insufficient"
+  }
+}

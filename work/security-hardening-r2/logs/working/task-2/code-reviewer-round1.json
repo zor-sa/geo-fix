@@ -1,0 +1,59 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "The implementation correctly delivers all three resilience layers (retry, user notification, startup cleanup) as specified in R-4. Architecture is clean with well-separated concerns between system_config.py (retry + persistence + dispatch) and main.py (orchestration + user notification). Two issues worth addressing: an unguarded write in check_pending_cleanup that could crash the app on startup, and the lack of try/except around the check_pending_cleanup call in main().",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "/home/claude/workspace/projects/geo-fix/src/system_config.py",
+      "line": 664,
+      "severity": "major",
+      "category": "error-handling",
+      "suggestion": "The re-write of still_failed operations at line 664 (CLEANUP_PENDING_FILE.write_text) is not wrapped in try/except, unlike the initial write in write_cleanup_pending() which correctly guards against I/O failures. If this write fails (permissions changed, disk full, parent dir deleted), the exception propagates unhandled through check_pending_cleanup() and will crash the application at startup (main.py line 520 has no try/except around the call). Wrap lines 664-665 in try/except with a logger.warning, consistent with write_cleanup_pending().",
+      "benefit": "Prevents application startup crash when the pending file cannot be rewritten after partial cleanup success.",
+      "optional": false
+    },
+    {
+      "file": "/home/claude/workspace/projects/geo-fix/src/main.py",
+      "line": 520,
+      "severity": "major",
+      "category": "error-handling",
+      "suggestion": "The check_pending_cleanup() call is not wrapped in try/except. Even with the fix above, a defense-in-depth approach would wrap this call so that a corrupted or inaccessible pending file never prevents a new session from starting. The spec says startup cleanup is a safety net -- it should not become a liability.",
+      "benefit": "Ensures startup resilience: a broken cleanup_pending.json file cannot prevent the user from launching geo-fix.",
+      "optional": false
+    },
+    {
+      "file": "/home/claude/workspace/projects/geo-fix/src/main.py",
+      "line": 246,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The expression `cleanup(state) or []` is redundant since cleanup() now always returns a list (never None). Remove the `or []` to avoid implying that cleanup() might return a falsy non-list value.",
+      "benefit": "Reduces reader confusion about the cleanup() return contract.",
+      "optional": true
+    },
+    {
+      "file": "/home/claude/workspace/projects/geo-fix/test/test_cleanup_resilience.py",
+      "line": 148,
+      "severity": "minor",
+      "category": "testing",
+      "suggestion": "The test file has 7 tests which exceeds the 5 required by the spec (good). However, there is no test verifying that check_pending_cleanup() handles a corrupted/non-JSON file gracefully (the implementation does handle this at line 644-647 in system_config.py, but it lacks test coverage). Consider adding a test that writes invalid content to cleanup_pending.json and verifies check_pending_cleanup() logs a warning and returns without raising.",
+      "benefit": "Covers the edge case of file corruption, which is realistic in crash-recovery scenarios.",
+      "optional": true
+    },
+    {
+      "file": "/home/claude/workspace/projects/geo-fix/test/test_cleanup_resilience.py",
+      "line": 174,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The test_do_cleanup_notifies_user_on_persistent_failure test directly mutates the module-level _cleanup_done flag (line 174). This creates coupling to the implementation detail. If the flag is ever renamed or the guard mechanism changes, this test breaks for non-functional reasons. Consider extracting a helper or using importlib.reload to get a fresh module state.",
+      "benefit": "Reduces test fragility when internal implementation details change.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 2,
+    "minorIssuesCount": 3,
+    "testCoverageAssessment": "adequate"
+  }
+}

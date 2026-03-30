@@ -50,3 +50,23 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 
 **Verification:**
 - `pytest test/test_system_config.py -v` → 13 passed (10 existing + 3 new)
+
+## Task 2: Robust cleanup with retry, startup check, and fallback
+
+**Status:** Done
+**Commit:** 0252a0f
+**Summary:** Implemented 3-layer cleanup resilience (R-4): retry each failed cleanup step once after 3s delay, persist failures to cleanup_pending.json in APPDATA, re-execute pending operations on next startup via check_pending_cleanup(). Added delete_cleanup_pending() for stale file removal on success. Label allowlist validation prevents injection via tampered JSON file.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions, 2 major + 3 minor → [logs/working/task-2/code-reviewer-round1.json]
+- security-auditor: changes_required, 1 critical + 3 major + 3 minor → [logs/working/task-2/security-auditor-round1.json]
+- test-reviewer: needs_improvement, 2 major + 5 minor → [logs/working/task-2/test-reviewer-round1.json]
+
+All critical/major findings addressed in fix commit. Added label allowlist validation (CWE-20), file permissions (CWE-732), TOCTOU fix (moved check after lock), try/except wrappers, stale file deletion, retry-exhausted test, invalid label test.
+
+**Verification:**
+- `pytest test/test_cleanup_resilience.py -v` → 10 passed
+- `pytest test/ -v --ignore=test/test_e2e_*.py` → 280 passed, 13 skipped, 0 failed
