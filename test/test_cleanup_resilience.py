@@ -7,13 +7,14 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-
-# Cleanup step labels (must match implementation constants)
-LABEL_CA_CERT = "CA cert removal"
-LABEL_SESSION_TMPDIR = "Session tmpdir deletion"
-LABEL_PROXY = "Proxy restore"
-LABEL_FIREFOX = "Firefox restore"
-LABEL_FIREWALL = "Firewall removal"
+from src.system_config import (
+    CLEANUP_LABEL_CA_CERT,
+    CLEANUP_LABEL_SESSION_TMPDIR,
+    CLEANUP_LABEL_PROXY,
+    CLEANUP_LABEL_FIREFOX,
+    CLEANUP_LABEL_FIREWALL,
+    _CLEANUP_RETRY_DELAY,
+)
 
 
 @pytest.fixture
@@ -52,15 +53,34 @@ class TestCleanupRetriesOnFailure:
     ):
         """Mock one cleanup step to raise on first call, succeed on second.
         Verify it is called twice and failures list is empty."""
-        # CA cert removal: fail first, succeed second
         mock_ca.side_effect = [OSError("certutil busy"), None]
 
         from src.system_config import cleanup
         failures = cleanup(mock_state)
 
         assert mock_ca.call_count == 2
-        assert mock_sleep.call_count >= 1  # at least one retry sleep
+        mock_sleep.assert_called_with(_CLEANUP_RETRY_DELAY)
         assert failures == []
+
+    @patch("src.system_config.time.sleep")
+    @patch("src.system_config.delete_state")
+    @patch("src.system_config.remove_firewall_rules")
+    @patch("src.system_config.unset_firefox_proxy")
+    @patch("src.system_config.unset_wininet_proxy")
+    @patch("src.system_config.delete_session_tmpdir")
+    @patch("src.system_config.uninstall_ca_cert")
+    def test_cleanup_returns_label_when_both_attempts_fail(
+        self, mock_ca, mock_tmpdir, mock_proxy, mock_firefox,
+        mock_firewall, mock_del_state, mock_sleep, mock_state
+    ):
+        """When a step fails both attempts, its label is in the returned list."""
+        mock_ca.side_effect = OSError("permanently broken")
+
+        from src.system_config import cleanup
+        failures = cleanup(mock_state)
+
+        assert mock_ca.call_count == 2
+        assert CLEANUP_LABEL_CA_CERT in failures
 
 
 class TestCleanupReturnsEmptyOnSuccess:
@@ -89,17 +109,16 @@ class TestCleanupWritesPendingJson:
     """write_cleanup_pending() writes failed operations to JSON file."""
 
     def test_cleanup_writes_pending_json_on_failure(self, pending_file):
-        """Mock a step to always raise; verify cleanup_pending.json is written
-        with the step label after write_cleanup_pending() is called."""
+        """Verify cleanup_pending.json is written with correct labels."""
         from src.system_config import write_cleanup_pending
 
-        failed_ops = [LABEL_CA_CERT, LABEL_FIREWALL]
+        failed_ops = [CLEANUP_LABEL_CA_CERT, CLEANUP_LABEL_FIREWALL]
         with patch("src.system_config.CLEANUP_PENDING_FILE", pending_file):
             write_cleanup_pending(failed_ops)
 
         assert pending_file.exists()
         data = json.loads(pending_file.read_text())
-        assert data == [LABEL_CA_CERT, LABEL_FIREWALL]
+        assert data == [CLEANUP_LABEL_CA_CERT, CLEANUP_LABEL_FIREWALL]
 
 
 class TestStartupCleansPendingOperations:
@@ -112,9 +131,8 @@ class TestStartupCleansPendingOperations:
     ):
         """Write a cleanup_pending.json with known labels; call check_pending_cleanup();
         verify operations executed and file deleted."""
-        # Create the pending file
         pending_file.parent.mkdir(parents=True, exist_ok=True)
-        pending_file.write_text(json.dumps([LABEL_CA_CERT, LABEL_FIREWALL]))
+        pending_file.write_text(json.dumps([CLEANUP_LABEL_CA_CERT, CLEANUP_LABEL_FIREWALL]))
 
         from src.system_config import check_pending_cleanup
         with patch("src.system_config.CLEANUP_PENDING_FILE", pending_file):
@@ -128,22 +146,39 @@ class TestStartupCleansPendingOperations:
         """check_pending_cleanup() is a no-op when file doesn't exist."""
         from src.system_config import check_pending_cleanup
         with patch("src.system_config.CLEANUP_PENDING_FILE", pending_file):
-            check_pending_cleanup()  # should not raise
+            check_pending_cleanup()
+        # No exception raised, file still doesn't exist
+        assert not pending_file.exists()
 
     @patch("src.system_config.remove_firewall_rules", side_effect=OSError("still broken"))
     @patch("src.system_config.uninstall_ca_cert")
     def test_startup_keeps_file_on_partial_failure(
         self, mock_ca, mock_firewall, pending_file
     ):
-        """If some operations fail again, the file is kept."""
+        """If some operations fail again, the file is kept with only failed labels."""
         pending_file.parent.mkdir(parents=True, exist_ok=True)
-        pending_file.write_text(json.dumps([LABEL_CA_CERT, LABEL_FIREWALL]))
+        pending_file.write_text(json.dumps([CLEANUP_LABEL_CA_CERT, CLEANUP_LABEL_FIREWALL]))
 
         from src.system_config import check_pending_cleanup
         with patch("src.system_config.CLEANUP_PENDING_FILE", pending_file):
             check_pending_cleanup()
 
         assert pending_file.exists()
+        remaining = json.loads(pending_file.read_text())
+        assert remaining == [CLEANUP_LABEL_FIREWALL]
+        assert CLEANUP_LABEL_CA_CERT not in remaining
+
+    def test_startup_ignores_invalid_labels(self, pending_file):
+        """Invalid labels (non-string, unknown) are skipped, not dispatched."""
+        pending_file.parent.mkdir(parents=True, exist_ok=True)
+        pending_file.write_text(json.dumps([42, "unknown_label", None]))
+
+        from src.system_config import check_pending_cleanup
+        with patch("src.system_config.CLEANUP_PENDING_FILE", pending_file):
+            check_pending_cleanup()
+
+        # All invalid — file should be deleted
+        assert not pending_file.exists()
 
 
 class TestDoCleanupNotifiesUser:
@@ -157,33 +192,59 @@ class TestDoCleanupNotifiesUser:
     @patch("src.system_config.delete_session_tmpdir")
     @patch("src.system_config.uninstall_ca_cert")
     @patch("src.main.write_cleanup_pending")
+    @patch("src.main.delete_cleanup_pending")
     @patch("src.main.load_state")
     def test_do_cleanup_notifies_user_on_persistent_failure(
-        self, mock_load, mock_write_pending, mock_ca, mock_tmpdir,
-        mock_proxy, mock_firefox, mock_firewall, mock_del_state,
-        mock_sleep, mock_state, capsys
+        self, mock_load, mock_del_pending, mock_write_pending, mock_ca,
+        mock_tmpdir, mock_proxy, mock_firefox, mock_firewall,
+        mock_del_state, mock_sleep, mock_state, capsys
     ):
         """Mock cleanup() to return non-empty failures list; verify
         write_cleanup_pending() is called and failure details printed to stderr."""
-        # Make firewall always fail (both attempts)
         mock_firewall.side_effect = OSError("blocked")
         mock_load.return_value = mock_state
 
-        # Reset the _cleanup_done flag for this test
         import src.main as main_mod
         main_mod._cleanup_done = False
 
-        # Patch out watchdog signaling and instance lock
         with patch.object(main_mod, "_signal_watchdog_stop"), \
              patch.object(main_mod, "_remove_onlogon_task"), \
              patch.object(main_mod, "release_instance_lock"):
             main_mod._do_cleanup()
 
-        # write_cleanup_pending should have been called with the failure
         mock_write_pending.assert_called_once()
         args = mock_write_pending.call_args[0][0]
-        assert LABEL_FIREWALL in args
+        assert CLEANUP_LABEL_FIREWALL in args
+        mock_del_pending.assert_not_called()
 
-        # stderr should contain failure details
         captured = capsys.readouterr()
         assert "очистить" in captured.err
+
+    @patch("src.system_config.time.sleep")
+    @patch("src.system_config.delete_state")
+    @patch("src.system_config.remove_firewall_rules")
+    @patch("src.system_config.unset_firefox_proxy")
+    @patch("src.system_config.unset_wininet_proxy")
+    @patch("src.system_config.delete_session_tmpdir")
+    @patch("src.system_config.uninstall_ca_cert")
+    @patch("src.main.write_cleanup_pending")
+    @patch("src.main.delete_cleanup_pending")
+    @patch("src.main.load_state")
+    def test_do_cleanup_deletes_pending_on_success(
+        self, mock_load, mock_del_pending, mock_write_pending, mock_ca,
+        mock_tmpdir, mock_proxy, mock_firefox, mock_firewall,
+        mock_del_state, mock_sleep, mock_state
+    ):
+        """On successful cleanup, stale cleanup_pending.json is deleted."""
+        mock_load.return_value = mock_state
+
+        import src.main as main_mod
+        main_mod._cleanup_done = False
+
+        with patch.object(main_mod, "_signal_watchdog_stop"), \
+             patch.object(main_mod, "_remove_onlogon_task"), \
+             patch.object(main_mod, "release_instance_lock"):
+            main_mod._do_cleanup()
+
+        mock_write_pending.assert_not_called()
+        mock_del_pending.assert_called_once()

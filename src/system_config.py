@@ -606,14 +606,33 @@ def remove_firewall_rules() -> None:
 
 # === Cleanup Persistence ===
 
+_VALID_CLEANUP_LABELS = frozenset({
+    CLEANUP_LABEL_CA_CERT,
+    CLEANUP_LABEL_SESSION_TMPDIR,
+    CLEANUP_LABEL_PROXY,
+    CLEANUP_LABEL_FIREFOX,
+    CLEANUP_LABEL_FIREWALL,
+})
+
+
 def write_cleanup_pending(failed_ops: list[str]) -> None:
     """Write failed cleanup operations to app data dir as JSON."""
     try:
         CLEANUP_PENDING_FILE.parent.mkdir(parents=True, exist_ok=True)
         CLEANUP_PENDING_FILE.write_text(json.dumps(failed_ops), encoding="utf-8")
+        if sys.platform != "win32":
+            os.chmod(str(CLEANUP_PENDING_FILE), 0o600)
         logger.info("Wrote cleanup_pending.json with %d operation(s)", len(failed_ops))
     except Exception as e:
         logger.warning("Could not write cleanup_pending.json: %s", e)
+
+
+def delete_cleanup_pending() -> None:
+    """Remove cleanup_pending.json if it exists."""
+    try:
+        CLEANUP_PENDING_FILE.unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning("Could not delete cleanup_pending.json: %s", e)
 
 
 def _execute_cleanup_by_label(label: str) -> None:
@@ -651,9 +670,19 @@ def check_pending_cleanup() -> None:
         CLEANUP_PENDING_FILE.unlink(missing_ok=True)
         return
 
-    logger.info("Found %d pending cleanup operation(s)", len(data))
+    # Validate labels: only known strings are dispatched
+    valid_labels = [l for l in data if isinstance(l, str) and l in _VALID_CLEANUP_LABELS]
+    skipped = len(data) - len(valid_labels)
+    if skipped:
+        logger.warning("Skipped %d invalid label(s) in cleanup_pending.json", skipped)
+
+    if not valid_labels:
+        CLEANUP_PENDING_FILE.unlink(missing_ok=True)
+        return
+
+    logger.info("Found %d pending cleanup operation(s)", len(valid_labels))
     still_failed = []
-    for label in data:
+    for label in valid_labels:
         try:
             _execute_cleanup_by_label(label)
         except Exception as e:
@@ -661,7 +690,10 @@ def check_pending_cleanup() -> None:
             still_failed.append(label)
 
     if still_failed:
-        CLEANUP_PENDING_FILE.write_text(json.dumps(still_failed), encoding="utf-8")
+        try:
+            CLEANUP_PENDING_FILE.write_text(json.dumps(still_failed), encoding="utf-8")
+        except Exception as e:
+            logger.warning("Could not update cleanup_pending.json: %s", e)
         logger.warning("%d pending cleanup operation(s) still failing", len(still_failed))
     else:
         CLEANUP_PENDING_FILE.unlink(missing_ok=True)

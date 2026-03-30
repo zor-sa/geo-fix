@@ -45,6 +45,7 @@ from src.system_config import (
     create_session_tmpdir,
     delete_ca_key_files,
     delete_ca_public_cert,
+    delete_cleanup_pending,
     delete_state,
     install_ca_cert,
     load_state,
@@ -243,7 +244,7 @@ def _do_cleanup():
             state = load_state()
             failures = []
             if state:
-                failures = cleanup(state) or []
+                failures = cleanup(state)
             _remove_onlogon_task()
             release_instance_lock()
             if failures:
@@ -251,6 +252,8 @@ def _do_cleanup():
                 msg = "Не удалось полностью очистить:\n" + "\n".join(f"  - {f}" for f in failures)
                 msg += "\nОчистка будет выполнена автоматически при следующем запуске."
                 print(msg, file=sys.stderr)
+            else:
+                delete_cleanup_pending()
         except Exception as e:
             logger.error("Cleanup error: %s", e)
 
@@ -516,9 +519,6 @@ def main():
     country_code = _validate_country(args.country)
     preset = get_preset(country_code)
 
-    # Clean up pending operations from previous failed cleanup
-    check_pending_cleanup()
-
     # Check for stale state and clean up
     stale = load_state()
     if stale:
@@ -529,6 +529,12 @@ def main():
     if not acquire_instance_lock():
         print("geo-fix уже запущен. Используйте --stop для остановки.")
         sys.exit(1)
+
+    # Clean up pending operations from previous failed cleanup (after lock)
+    try:
+        check_pending_cleanup()
+    except Exception as e:
+        logger.warning("check_pending_cleanup failed: %s — continuing", e)
 
     # Register cleanup handlers
     atexit.register(_do_cleanup)
