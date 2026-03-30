@@ -1,0 +1,91 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 8,
+    "critical": 0,
+    "major": 4,
+    "minor": 4
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "A01: Broken Access Control",
+      "title": "Registry key write lacks validation of original value before restore",
+      "description": "The tech-spec instructs restore_location_services() to write back the exact original value from ProxyState.original_location_services. However, the ProxyState field is stored in a DPAPI-encrypted file — if the file is decrypted and tampered with (e.g., by a process running as the same user), the original_location_services field could be poisoned to 'Allow', causing location services to be enabled even if the user had them disabled. The spec does not require input validation of the read-back value before writing it to the registry.",
+      "location": "Section: Architecture, Task 1: Windows Location Services registry control",
+      "impact": "An attacker with access to the user session could force location services to be re-enabled on cleanup, undoing privacy protection or enabling surveillance.",
+      "recommendation": "Validate that the read-back original value is one of the known-valid strings {'Allow', 'Deny', None} before passing to restore_location_services(). Reject and log any unexpected value, defaulting to 'Deny' rather than 'Allow'. Example: if value not in ('Allow', 'Deny', None): logger.error('Invalid original_location_services value — defaulting to Deny'); value = 'Deny'",
+      "cwe": "CWE-20 (Improper Input Validation)"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "Proxy-level intercept response contains hard-coded accuracy value rather than realistic variance",
+      "description": "The tech-spec specifies the synthetic geolocation intercept response as {\"location\": {\"lat\": ..., \"lng\": ...}, \"accuracy\": 50.0}. A fixed accuracy of 50.0 is a detectable fingerprint: real Google Geolocation API responses vary accuracy widely based on WiFi density (10–2000 m). A server receiving the synthetic response could fingerprint requests where accuracy is always exactly 50.0, especially across multiple calls. This is a design-level fingerprinting exposure, not exploitable directly by an external attacker, but undermines the privacy guarantee the feature is intended to provide.",
+      "location": "Section: Decisions, Decision 3 / Task 3: Proxy-level geolocation API intercept",
+      "impact": "Server-side fingerprinting could identify that a user is running geo-fix, defeating the privacy guarantee. A detection list of accuracy=50.0 responses could be trivially built.",
+      "recommendation": "Add mild realistic variance to the accuracy value: use a random value in the range 40–80 (or a semantically appropriate range for city-level WiFi). Example in Python: import random; accuracy = round(random.uniform(40.0, 80.0), 1). This matches the existing geolocation JS override in inject.js which already simulates a 50m fixed accuracy — both layers should use variance.",
+      "cwe": "CWE-200 (Exposure of Sensitive Information)"
+    },
+    {
+      "severity": "major",
+      "category": "A04: Insecure Design",
+      "title": "CSP weakening on all domains expands attack surface for XSS via injected nonce",
+      "description": "The tech-spec proposes extending JS injection to ALL HTML responses on all domains (not just target domains). The existing _modify_csp() function adds a nonce to script-src, which weakens any existing strict-dynamic or script-src 'none' policy on arbitrary third-party sites. On non-target domains, the injected geolocation-only script is small, but the CSP nonce injection itself broadens the window for other injected scripts: if the injected payload's nonce leaks or if the HTML injection point is near attacker-controlled content, the nonce could be reused to inject arbitrary scripts. The spec acknowledges CSP conflict risk but only discusses skipping injection when CSP modification is impossible — not when modification silently weakens an otherwise strict policy.",
+      "location": "Section: Decisions, Decision 2 / Task 2: Universal geolocation JS injection",
+      "impact": "Weakening a site's strict CSP via proxy-level nonce injection could allow reflected or stored XSS payloads on that site to execute that otherwise would have been blocked. Users trusting geo-fix's proxy implicitly trust that their browsing is not made less secure — this design violates that expectation.",
+      "recommendation": "Add a CSP safety check: if an existing policy contains 'script-src' with 'none' or lacks any 'unsafe-*' sources and has no existing nonces/hashes, consider skipping injection on that domain rather than weakening it. Alternatively, document this trade-off explicitly in the spec and add a configurable opt-out list. Also, confirm that the proxy-level intercept (layer 3) functions as an adequate fallback when injection is skipped so geolocation is still spoofed.",
+      "cwe": "CWE-693 (Protection Mechanism Failure)"
+    },
+    {
+      "severity": "major",
+      "category": "A10: SSRF",
+      "title": "Proxy intercept URL matching is under-specified, creating risk of over-broad or bypassable matching",
+      "description": "The spec defines the intercept target as POST requests to 'googleapis.com/geolocation/v1/geolocate' but does not specify the exact match strategy in request(). The current request() handler only performs header rewriting, with no URL inspection. The new intercept must distinguish: (a) only POST method, (b) only the exact googleapis.com host, and (c) only the /geolocation/v1/geolocate path. If the check is implemented as a substring match on flow.request.url (e.g., 'googleapis.com/geolocation' in url), an adversarial redirect from an attacker-controlled domain to a URL containing that substring could trigger the intercept, causing the proxy to return fake coordinates for a request that was not the geolocation API. Conversely, a subdomain bypass (e.g., evil-googleapis.com) could avoid the intercept.",
+      "location": "Section: Architecture, Task 3: Proxy-level geolocation API intercept",
+      "impact": "Under-broad matching allows MAC address exfiltration through minor URL variations. Over-broad matching could leak fake coordinate responses to unintended endpoints.",
+      "recommendation": "Specify in the tech-spec that the URL match must check: flow.request.method == 'POST' AND flow.request.host == 'www.googleapis.com' AND flow.request.path == '/geolocation/v1/geolocate'. Using exact host and path comparisons (not substring) prevents both over-matching and bypass. Add this as an explicit acceptance criterion.",
+      "cwe": "CWE-918 (Server-Side Request Forgery)"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "Location Services registry disable/restore operations are not included in cleanup_pending audit trail",
+      "description": "The tech-spec defines a new cleanup label 'Location Services restore' and integrates it with the retry + pending file pattern. However, there is no explicit mention of logging the original registry value that was read and the new value that was written during disable_location_services(). Without logging these values, if the function silently fails to read the original value, restore_location_services() will write back None/no-op and location services will remain disabled without any audit trail. The existing proxy registry code logs each operation (set_wininet_proxy, unset_wininet_proxy both call logger.info).",
+      "location": "Section: Implementation Tasks, Task 1 / Task 4: Startup/cleanup integration",
+      "impact": "Silent registry operation failures could leave location services in an unintended state with no log evidence, making debugging and incident response difficult.",
+      "recommendation": "Require that disable_location_services() logs: (1) the original value read, (2) the new value written, and (3) any exception with a WARNING level. restore_location_services() should log: (1) the value being restored, (2) whether the key is being deleted (if original was None) or written. Mirror the pattern in set_wininet_proxy() / unset_wininet_proxy().",
+      "cwe": "CWE-778 (Insufficient Logging)"
+    },
+    {
+      "severity": "minor",
+      "category": "A08: Software and Data Integrity",
+      "title": "navigator.permissions.query override does not validate the permission name before returning granted",
+      "description": "The tech-spec specifies overriding navigator.permissions.query({name: 'geolocation'}) to always return {state: 'granted'}. The inject.js implementation described should intercept the call and return the fake result for the geolocation permission specifically. If the override is implemented as unconditionally returning {state: 'granted'} for ALL permission names (a common implementation shortcut), it could incorrectly grant fingerprint permissions, camera/microphone queries, or notifications — making the browser appear to have granted permissions it has not, which could be exploited by sites probing permission states for fingerprinting.",
+      "location": "Section: Architecture, inject.js / Task 2: Universal geolocation JS injection",
+      "impact": "Overly broad permissions override could reveal false permission states to sites, providing an anomalous fingerprint (all permissions granted) or enabling unexpected site behaviors.",
+      "recommendation": "Specify in the tech-spec that the permissions.query override must check that options.name === 'geolocation' before returning {state: 'granted'}, and call the original permissions.query for all other permission names. Add this as an explicit acceptance criterion and a unit test case.",
+      "cwe": "CWE-284 (Improper Access Control)"
+    },
+    {
+      "severity": "minor",
+      "category": "A05: Security Misconfiguration",
+      "title": "Non-Windows fallback for Location Services disable does not document whether other platforms leak WiFi geolocation",
+      "description": "The tech-spec specifies that non-Windows platforms execute Location Services functions as no-ops. This is functionally correct for the current Windows-only scope, but the spec does not document or gate whether geo-fix can be run on macOS/Linux where the absence of registry-level WiFi blocking means the registry layer provides zero protection. A user on macOS who runs geo-fix would receive JS injection and proxy intercept protection but no system-level WiFi blocking — and would not be warned. The spec does not include a platform-check warning to the user in these cases.",
+      "location": "Section: Acceptance Criteria / Task 4: Startup/cleanup integration",
+      "impact": "Users on non-Windows platforms may believe they have full protection but lack the registry-level WiFi geolocation blocking layer, leading to MAC address leaks through the OS location service.",
+      "recommendation": "Add an acceptance criterion: on non-Windows platforms, log an informational warning at startup indicating that registry-based WiFi geolocation blocking is not available on this platform and only JS + proxy layers are active. The warning should be visible in the UI/console output (not just log file).",
+      "cwe": "CWE-209 (Information Exposure Through an Error Message)"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "ProxyState schema validation rejects unknown fields, but new field addition is backward-compatible only one direction",
+      "description": "ProxyState.from_json() performs strict schema validation: unknown fields raise ValueError. The tech-spec adds original_location_services with a default of None, which means new code reading old state files (lacking the field) will succeed via dataclass default. However, if a user downgrades geo-fix after a new state file is written (containing original_location_services), the old code's strict validation will reject the state file and fall back to stateless cleanup. The stateless cleanup does not restore Location Services (it has no label for that). This creates a downgrade path where Location Services is left disabled on crash.",
+      "location": "Section: Data Models / system_config.py:99 (ProxyState.from_json strict validation)",
+      "impact": "On downgrade after a session that modified Location Services, cleanup will not restore the registry value, leaving Location Services permanently disabled until manually re-enabled.",
+      "recommendation": "Document this downgrade limitation explicitly in the tech-spec. Optionally, consider whether stateless_cleanup() should also attempt to re-enable Location Services as a best-effort step. At minimum, add the limitation to the Risks table.",
+      "cwe": "CWE-1357 (Reliance on Insufficiently Trustworthy Component)"
+    }
+  ]
+}

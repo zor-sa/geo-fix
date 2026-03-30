@@ -1,0 +1,137 @@
+{
+  "status": "pass",
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 13,
+  "requirements_covered": 12,
+  "requirements_partial": 1,
+  "requirements_missing": 0,
+  "requirements": [
+    {
+      "id": "US-1",
+      "text": "JS geolocation injection works on ALL domains, not only target domains",
+      "status": "covered",
+      "location": "Solution layer 2, Architecture proxy_addon.py, Decision 2, Task 2"
+    },
+    {
+      "id": "US-2",
+      "text": "Non-target domains receive geolocation-only payload (no timezone/language) to reduce CSP risk",
+      "status": "covered",
+      "location": "Solution layer 2, Decision 2, Acceptance Criteria, Task 2"
+    },
+    {
+      "id": "US-3",
+      "text": "navigator.geolocation.getCurrentPosition() returns fake coords on arbitrary domain",
+      "status": "covered",
+      "location": "Solution layer 2, Architecture response flow, Integration tests"
+    },
+    {
+      "id": "US-4",
+      "text": "navigator.permissions.query({name: 'geolocation'}) returns {state: 'granted'} on all domains",
+      "status": "covered",
+      "location": "Solution (additionally), Architecture inject.js, Acceptance Criteria, Unit tests, Task 2"
+    },
+    {
+      "id": "US-5",
+      "text": "Proxy intercepts POST to googleapis.com/geolocation/v1/geolocate and returns fake coordinates",
+      "status": "covered",
+      "location": "Solution layer 3, Decision 3, Acceptance Criteria, Task 3"
+    },
+    {
+      "id": "US-6",
+      "text": "Proxy intercept error is logged, request passes through unchanged without breaking the page",
+      "status": "covered",
+      "location": "Decision 3 rationale, Risks table, Acceptance Criteria (request() error handling)"
+    },
+    {
+      "id": "US-7",
+      "text": "Windows Location Services disabled via HKCU registry at startup, original value saved",
+      "status": "covered",
+      "location": "Solution layer 1, Decision 1, Decision 4 (ProxyState field), Task 1, Task 4"
+    },
+    {
+      "id": "US-8",
+      "text": "Windows Location Services restored to original state on stop, including via cleanup resilience",
+      "status": "covered",
+      "location": "Solution layer 1, Architecture Cleanup block, Task 1 (cleanup label), Task 4"
+    },
+    {
+      "id": "US-9",
+      "text": "If HKCU path fails — log warning, continue (do not block startup)",
+      "status": "covered",
+      "location": "Decision 1 rationale (graceful fallback), Risks table row 1, Acceptance Criteria (Non-Windows no-ops)"
+    },
+    {
+      "id": "US-10",
+      "text": "Registry cleanup integrated into existing cleanup retry + cleanup_pending.json pattern",
+      "status": "covered",
+      "location": "Architecture system_config.py, Architecture Cleanup block, Acceptance Criteria (new cleanup label), Unit tests (cleanup with new label), Task 1"
+    },
+    {
+      "id": "US-11",
+      "text": "Existing tests not broken (no regressions)",
+      "status": "covered",
+      "location": "Integration tests regression case, Acceptance Criteria (all existing tests pass), Task 8 Pre-deploy QA"
+    },
+    {
+      "id": "US-12",
+      "text": "Cross-origin iframes limitation acknowledged (injection only if iframe response passed through proxy)",
+      "status": "partial",
+      "location": "Not mentioned in tech-spec. User-spec states this as a known constraint. Tech-spec has no corresponding Decisions entry or documented limitation acknowledging this boundary condition."
+    },
+    {
+      "id": "US-13",
+      "text": "Performance impact monitored via existing RAM watchdog",
+      "status": "covered",
+      "location": "Risks table (RAM watchdog monitors memory), Decision 2 rationale (performance overhead justification)"
+    }
+  ],
+  "findings": [
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-12: Cross-origin iframes geolocation injection limitation",
+      "detail": "User-spec explicitly states 'Cross-origin iframes have their own JS context — geolocation override only works if iframe response also passed through proxy'. Tech-spec does not acknowledge this limitation anywhere — not in Decisions, not in a Limitations section, not in the Architecture description. Future implementers reading only the tech-spec will be unaware of this boundary condition and may consider iframe non-coverage a bug rather than a known constraint.",
+      "severity": "minor"
+    },
+    {
+      "type": "scope_creep",
+      "source": "tech-spec",
+      "requirement": "Non-Windows platform no-ops",
+      "detail": "Acceptance Criteria includes 'Non-Windows platforms: Location Services functions are no-ops (consistent with existing pattern)'. User-spec scopes this feature explicitly to Windows 10/11 and makes no mention of non-Windows behavior. This is an engineering addition (defensive coding pattern), not a functional requirement. Classification: acceptable infrastructure addition — not a scope creep concern, but flagged for transparency.",
+      "severity": "minor"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-2 / US-1: CSP injection failure handling",
+      "detail": "User-spec states 'If CSP modification is impossible — the page is skipped without injection, proxy intercept remains as fallback'. Tech-spec mentions this in the Risks table mitigation but does not specify it as an Acceptance Criterion or include it in the Unit/Integration test plan. There is no test case verifying that injection is silently skipped (not thrown) when CSP modification fails on a non-target domain. For an M-size feature that explicitly names CSP conflicts as a top risk, absence of a test for the failure path is a meaningful gap.",
+      "severity": "major"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-7 / US-8: ProxyState backward compatibility on restore",
+      "detail": "Decision 4 states original_location_services can be None (key didn't exist). restore_location_services() must handle this case by deleting the registry key rather than writing None. The Acceptance Criteria says 'writes back the exact original value' but does not specify the key-deletion path when original value was None. Unit tests list mock winreg operations but do not call out the None-value case explicitly. This is a boundary condition that could silently leave a Deny entry in the registry on a machine where the key previously did not exist.",
+      "severity": "major"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-5: Proxy intercept response format specification",
+      "detail": "Acceptance Criteria specifies the synthetic response shape as {\"location\": {\"lat\": ..., \"lng\": ...}, \"accuracy\": 50.0}. However, the real googleapis.com/geolocation/v1/geolocate response includes additional fields (accuracy per Google spec is nested differently, and the response can include other metadata). If a site validates the response shape strictly, a minimal fake response may trigger unexpected behavior. The spec does not document the decision to use this minimal shape nor whether it was validated against real API responses. This is a minor completeness gap.",
+      "severity": "minor"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-1 / US-2: Content-type and size gates for universal injection",
+      "detail": "Architecture mentions 'content-type and size gates already filter non-HTML' as a mitigating factor for performance. However, the tech-spec does not specify what the size gate threshold is, whether it already exists in proxy_addon.py or needs to be added, and whether Task 2 should verify these gates are in place. If this gate does not already exist, Task 2 may inadvertently inject into all HTML responses of unlimited size. This should be an explicit Acceptance Criterion or a read-file reference in Task 2.",
+      "severity": "minor"
+    }
+  ],
+  "summary": "12/13 requirements covered, 1 partial (US-12 iframe limitation not acknowledged in tech-spec). No missing requirements. 5 findings: 2 major (CSP skip-path not tested, registry key-deletion on None original value not specified), 3 minor (iframe limitation undocumented, non-Windows no-op is unasked-for but acceptable, googleapis response shape not validated against real API). Status: pass — no critical findings."
+}

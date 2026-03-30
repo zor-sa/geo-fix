@@ -76,17 +76,31 @@ None.
 
 ### Decision 3: Proxy-level geolocation API intercept as defense-in-depth
 
-**Decision:** Intercept `POST https://www.googleapis.com/geolocation/v1/geolocate` in `request()` handler and return a synthetic `200 OK` response with fake coordinates. Do not intercept Microsoft Location Service (`dev.virtualearth.net`) separately.
+**Decision:** Intercept requests matching exact `host == 'www.googleapis.com'` AND `path == '/geolocation/v1/geolocate'` AND `method == 'POST'` in `request()` handler. Return a synthetic `200 OK` with fake coordinates and randomized accuracy (40–80m). Do not intercept Microsoft Location Service separately.
 
-**Rationale:** Even with JS override, Chrome's internal geolocation stack (C++) may send the API request before JS runs. Intercepting at proxy level prevents MAC address exfiltration. Microsoft's service is blocked by the registry disable. Error handling: if intercept fails, log and pass request through (don't break the page).
+**Rationale:** Even with JS override, Chrome's internal geolocation stack (C++) may send the API request before JS runs. Intercepting at proxy level prevents MAC address exfiltration. Microsoft's service is blocked by the registry disable. Error handling: if intercept fails, log and pass request through. Exact host/path/method match prevents over-broad interception. Randomized accuracy avoids fingerprinting via fixed value.
 
-**Alternatives considered:** Block request entirely with 403 (triggers JS error callback, detectable); intercept only in response() (MAC addresses already sent); intercept both Google and Microsoft APIs (registry covers Microsoft).
+**Alternatives considered:** Block request entirely with 403 (triggers JS error callback, detectable); substring URL match (over-broad and bypassable); intercept both Google and Microsoft APIs (registry covers Microsoft); fixed accuracy value (fingerprintable).
 
 ### Decision 4: ProxyState field for Location Services
 
-**Decision:** Add `original_location_services: Optional[str] = None` field to ProxyState. Stores the registry value read before disabling (`Allow`, `Deny`, or `None` if key didn't exist).
+**Decision:** Add `original_location_services: Optional[str] = None` field to ProxyState. Stores the registry value read before disabling (`Allow`, `Deny`, or `None` if key didn't exist). `restore_location_services()` validates the value is in `{'Allow', 'Deny', None}` — any other value defaults to `Deny` (safe default). When `None`, the registry key is deleted (restoring "no key existed" state).
 
-**Rationale:** Must restore exact original state on cleanup — if user had location disabled before geo-fix, don't re-enable it. The field has a default, so existing state files remain loadable (backward compatible).
+**Rationale:** Must restore exact original state on cleanup — if user had location disabled before geo-fix, don't re-enable it. The field has a default, so existing state files remain loadable (backward compatible). Input validation prevents a tampered state file from forcing unexpected registry values.
+
+### Decision 5: CSP skip guard for maximally restrictive policies
+
+**Decision:** On non-target domains, if the page has `script-src 'none'` or `require-trusted-types-for 'script'` in CSP, skip JS injection entirely. The proxy-level geolocation API intercept remains as fallback.
+
+**Rationale:** Weakening a site's explicit `script-src 'none'` policy creates security risk for the user. Sites with trusted types enforcement will reject injected scripts regardless of nonce. Skipping injection on these sites is safe because the proxy layer catches the geolocation API call.
+
+**Alternatives considered:** Inject anyway and rely on browser error handling (degrades site security); remove CSP entirely (too aggressive).
+
+### Decision 6: Cross-origin iframes
+
+**Decision:** Cross-origin iframes are not covered by JS injection unless their response also passes through the proxy and gets injected independently. This is a known limitation documented in user-spec.
+
+**Rationale:** Each cross-origin iframe has its own JS context. The proxy can inject into iframe responses if they're HTML and pass through mitmproxy, but same-site iframes served from a CDN or different origin may not get injection. The registry-level disable and proxy API intercept provide coverage for these cases.
 
 ## Data Models
 
@@ -108,12 +122,17 @@ None.
 **Feature size:** M
 
 ### Unit tests
-- `disable_location_services()` / `restore_location_services()` — mock winreg, verify correct key/value operations, verify original value preservation
+- `disable_location_services()` / `restore_location_services()` — mock winreg, verify read-before-write, verify original value preservation, verify `None` original → key deletion on restore
+- `restore_location_services()` rejects invalid original values (not in `{'Allow', 'Deny', None}`) → defaults to `Deny`
+- Non-Windows platform: both functions are no-ops
 - `cleanup()` with new Location Services label — retry and pending file behavior
-- Geolocation API intercept in `request()` — mock flow with matching URL → verify synthetic response
-- Geolocation API intercept skips non-matching URLs
-- `navigator.permissions.query` override present in injected JS
+- ProxyState backward compat: old state file without `original_location_services` deserializes with default `None`
+- Geolocation API intercept in `request()` — exact host/path/method match → synthetic response with randomized accuracy
+- Geolocation API intercept skips non-matching URLs, non-POST methods
+- Geolocation API intercept error path — mock to raise → log, pass through, no re-raise
+- `navigator.permissions.query` override scoped to `name === 'geolocation'` only, returns `{state: 'granted'}`
 - Geolocation-only payload on non-target domain vs full payload on target domain
+- CSP skip: non-target domain with `script-src 'none'` → no injection
 
 ### Integration tests
 - Proxy flow: non-target domain HTML → response contains geolocation override JS (but not timezone/language)
@@ -145,11 +164,13 @@ pytest, mitmproxy (real instance for integration tests).
 Technical criteria (supplement user-spec):
 
 - [ ] `disable_location_services()` reads and stores original registry value before writing `Deny`
-- [ ] `restore_location_services()` writes back the exact original value (not unconditionally `Allow`)
+- [ ] `restore_location_services()` writes back the exact original value; when `None` → deletes the key; validates value is in `{'Allow', 'Deny', None}`
 - [ ] Non-Windows platforms: Location Services functions are no-ops (consistent with existing pattern)
 - [ ] New cleanup label `"Location Services restore"` added to `_VALID_CLEANUP_LABELS` and `_execute_cleanup_by_label()`
 - [ ] `response()` injects geolocation-only JS on non-target domains (not full payload)
-- [ ] `request()` intercepts googleapis.com/geolocation POST and returns `{"location": {"lat": ..., "lng": ...}, "accuracy": 50.0}`
+- [ ] `request()` intercepts exact `host == www.googleapis.com` + `path == /geolocation/v1/geolocate` + `POST` and returns fake JSON with randomized accuracy (40–80m)
+- [ ] `navigator.permissions.query` override scoped to `name === 'geolocation'` only (other permissions unaffected)
+- [ ] Non-target domains with `script-src 'none'` CSP → injection skipped, proxy intercept remains as fallback
 - [ ] `request()` error handling: try/except around intercept, log on failure, pass through
 - [ ] ProxyState gains `original_location_services` field with backward-compatible default
 - [ ] All existing tests pass (no regressions)
@@ -166,23 +187,16 @@ Technical criteria (supplement user-spec):
 - **Files to modify:** `src/system_config.py`
 - **Files to read:** `src/system_config.py` (existing registry pattern, cleanup labels)
 
-#### Task 2: Universal geolocation JS injection
-- **Description:** Extend JS injection in proxy_addon.py to inject geolocation-only override on non-target domains. Target domains continue to get the full payload. Add navigator.permissions.query override to inject.js.
+#### Task 2: Universal geolocation JS injection + proxy API intercept
+- **Description:** Extend proxy_addon.py: (1) inject geolocation-only JS override on non-target domains with CSP skip guard for `script-src 'none'`, (2) intercept googleapis.com/geolocation POST in request() and return fake coordinates. Add navigator.permissions.query override (scoped to geolocation only) to inject.js.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Files to modify:** `src/proxy_addon.py`, `src/inject.js`
-- **Files to read:** `src/proxy_addon.py` (response() flow, _modify_csp()), `src/inject.js` (stealthDefine pattern), `test/test_proxy_addon.py`
-
-#### Task 3: Proxy-level geolocation API intercept
-- **Description:** Add geolocation API interception in GeoFixAddon.request() to block googleapis.com/geolocation POST requests and return fake coordinates. Defense-in-depth layer preventing MAC address exfiltration.
-- **Skill:** code-writing
-- **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Files to modify:** `src/proxy_addon.py`
-- **Files to read:** `src/proxy_addon.py` (request() handler, _lock pattern), `src/presets.py` (CountryPreset lat/lon)
+- **Files to read:** `src/proxy_addon.py` (response() flow, request() handler, _modify_csp()), `src/inject.js` (stealthDefine pattern), `src/presets.py` (CountryPreset lat/lon), `test/test_proxy_addon.py`
 
 ### Wave 2 (depends on Wave 1)
 
-#### Task 4: Startup/cleanup integration
+#### Task 3: Startup/cleanup integration
 - **Description:** Wire Location Services disable/restore into main.py startup sequence and cleanup flow. Add `original_location_services` field to ProxyState. Call disable at startup, ensure restore happens through existing cleanup resilience.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
@@ -191,24 +205,24 @@ Technical criteria (supplement user-spec):
 
 ### Audit Wave
 
-#### Task 5: Code Audit
+#### Task 4: Code Audit
 - **Description:** Full-feature code quality audit. Read all source files created/modified in this feature. Review holistically for cross-component issues: duplicate resource initialization, shared resources compliance with Architecture decisions, architectural consistency. Write audit report.
 - **Skill:** code-reviewing
 - **Reviewers:** none
 
-#### Task 6: Security Audit
+#### Task 5: Security Audit
 - **Description:** Full-feature security audit. Read all source files created/modified in this feature. Analyze for OWASP Top 10 across all components, cross-component auth/data flow. Write audit report.
 - **Skill:** security-auditor
 - **Reviewers:** none
 
-#### Task 7: Test Audit
+#### Task 6: Test Audit
 - **Description:** Full-feature test quality audit. Read all test files created in this feature. Verify coverage, meaningful assertions, test pyramid balance across all components. Write audit report.
 - **Skill:** test-master
 - **Reviewers:** none
 
 ### Final Wave
 
-#### Task 8: Pre-deploy QA
+#### Task 7: Pre-deploy QA
 - **Description:** Acceptance testing: run all tests, verify acceptance criteria from user-spec and tech-spec.
 - **Skill:** pre-deploy-qa
 - **Reviewers:** none
