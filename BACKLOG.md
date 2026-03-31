@@ -90,3 +90,17 @@
 5. Persistence через реестр Run/RunOnce — запуск очистки при следующем логине
 
 **Decision:** Требуется code-research для выбора наиболее надёжного подхода.
+
+---
+
+### Полная маскировка на все домены по умолчанию
+
+**Status:** ready — можно брать в работу
+**Source:** user feedback, 2026-03-31
+**Related:** proxy_addon.py (two-tier injection), inject.js
+
+**Problem:** Сейчас полный payload (timezone, language, WebRTC, geolocation, permissions) инжектится только на TARGET_DOMAINS (Google). На остальных доменах — только geolocation + permissions. Если сайт проверяет timezone или language, он увидит реальные значения и может определить настоящее местоположение пользователя.
+
+**Требование:** Инжектировать полный payload на все домены по умолчанию. Убрать двухуровневую схему — одинаковая маскировка везде.
+
+**Scope:** Изменить `response()` в proxy_addon.py: на не-целевых доменах инжектировать полный payload вместо geo-only. Убрать `_build_geo_only_payload()`. Обновить тесты.
