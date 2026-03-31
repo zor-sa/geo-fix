@@ -10,3 +10,4 @@ build/*.spec
 credentials.json
 secrets/
 benchmark_results.json
+.claude
