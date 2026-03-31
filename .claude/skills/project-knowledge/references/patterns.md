@@ -33,7 +33,10 @@
 ## Business Rules
 
 - Accept-Language rewriting applies to ALL domains
-- JS injection applies only to TARGET_DOMAINS (Google properties)
+- JS injection: two-tier — full payload on TARGET_DOMAINS, geo-only on all others
+- Geolocation API intercept: POST to googleapis.com/geolocation returns fake coordinates at proxy level
+- CSP skip guard: pages with `script-src 'none'` or `require-trusted-types-for 'script'` skip JS injection (proxy intercept covers them)
 - CSP headers modified only when JS is injected (nonce-based)
+- Windows Location Services disabled via HKCU registry at startup, restored on cleanup
 - VPN detection is advisory — warns but does not block startup
 - Single instance enforced via PID file lock

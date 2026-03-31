@@ -39,7 +39,7 @@
 
 ### WiFi geolocation leak — роутер MAC-адрес раскрывает реальное местоположение
 
-**Status:** ready — можно брать в работу
+**Status:** done — реализовано в work/wifi-geolocation-leak (2026-03-30)
 **Source:** user report, 2026-03-30
 **Related:** inject.js (navigator.geolocation override), system_config.py
 

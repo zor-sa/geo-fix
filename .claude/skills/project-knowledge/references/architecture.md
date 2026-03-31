@@ -78,24 +78,27 @@ Main thread blocks on stop_event.wait()
 ```
 Browser → WinINET proxy (127.0.0.1:8080) → GeoFixAddon.request()
   │  Accept-Language header rewritten (ALL domains)
+  │  Geolocation API intercept: POST googleapis.com/geolocation → fake JSON response
   ▼
 mitmproxy → real server (TLS with mitmproxy CA)
   ▼
 GeoFixAddon.response()
-  │  Target domains only (*.google.com, *.googleapis.com, etc.):
+  │  Two-tier JS injection (ALL domains):
   │    1. Find injection position (<head>, <html>, or <!DOCTYPE>)
   ��    2. Generate cryptographic nonce (secrets.token_urlsafe)
-  │    3. Build JS payload from inject.js template + preset values
-  │    4. Insert <script nonce="..."> tag
-  │    5. Modify CSP headers to allow nonce
+  │    3. Target domains: full JS payload (timezone/geo/language/WebRTC/permissions)
+  │       Non-target domains: geo-only payload (geolocation + permissions.query)
+  │    4. CSP skip guard: script-src 'none' or require-trusted-types → skip injection
+  │    5. Insert <script nonce="..."> tag, modify CSP headers
   ▼
-Browser receives modified HTML → inject.js IIFE executes:
-  - Date.prototype.getTimezoneOffset → fake offset
-  - Intl.DateTimeFormat → fake timezone
-  - Temporal.Now (Chrome 145+) → fake timezone
-  - navigator.geolocation → fake coords with simulated delay
-  - navigator.language/languages → fake language
-  - RTCPeerConnection → STUN servers filtered out
+Browser receives modified HTML → JS IIFE executes:
+  - Date.prototype.getTimezoneOffset → fake offset (target only)
+  - Intl.DateTimeFormat → fake timezone (target only)
+  - Temporal.Now (Chrome 145+) → fake timezone (target only)
+  - navigator.geolocation → fake coords (ALL domains)
+  - navigator.permissions.query('geolocation') → {state: 'granted'} (ALL domains)
+  - navigator.language/languages → fake language (target only)
+  - RTCPeerConnection → STUN servers filtered out (target only)
   - All overrides have .toString() returning "[native code]"
 ```
 
@@ -108,6 +111,7 @@ Browser receives modified HTML → inject.js IIFE executes:
 | Firefox proxy | user.js in Firefox profile directory | No |
 | Firefox CA | security.enterprise_roots.enabled=true in user.js | No |
 | WebRTC firewall | netsh advfirewall rules for STUN ports | Yes (optional) |
+| Location Services | HKCU DeviceAccess registry (disable/restore) | No |
 | VPN detection | netsh interface + ipconfig | No |
 
 ## State Management
@@ -117,6 +121,7 @@ Browser receives modified HTML → inject.js IIFE executes:
 - Original proxy settings (WinINET backup)
 - Firefox modification flag + backup path
 - CA thumbprint for targeted cert removal
+- Original Location Services registry value (for restore on cleanup)
 - Schema-validated on load (unknown fields rejected)
 
 **Cleanup resilience** (`cleanup_pending.json` in APPDATA/geo-fix/):
