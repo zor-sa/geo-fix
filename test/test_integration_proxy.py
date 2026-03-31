@@ -494,11 +494,11 @@ class TestProxyRestart:
             _shutdown_proxy(master2, loop2, thread2)
 
 
-class TestNonTargetDomainGeoJS:
-    """Non-target domains receive geo-only JS injection (getCurrentPosition, no getTimezoneOffset)."""
+class TestNonTargetDomainFullJS:
+    """Non-target domains receive full JS injection (same payload as target domains)."""
 
-    def test_integration_non_target_domain_gets_geo_js(self):
-        """HTTP request to a non-target domain → body has getCurrentPosition, NOT getTimezoneOffset."""
+    def test_integration_non_target_domain_gets_full_js(self):
+        """HTTP request to a non-target domain → body has full payload including getTimezoneOffset."""
         proxy_port = _free_port()
         mock_port = _free_port()
 
@@ -520,8 +520,8 @@ class TestNonTargetDomainGeoJS:
             body = response.read().decode("utf-8")
             assert "getCurrentPosition" in body, \
                 f"Expected getCurrentPosition in body, got: {body[:300]}"
-            assert "getTimezoneOffset" not in body, \
-                f"Expected getTimezoneOffset NOT in body (geo-only payload), got: {body[:300]}"
+            assert "getTimezoneOffset" in body, \
+                f"Expected getTimezoneOffset in body (full payload), got: {body[:300]}"
         finally:
             _shutdown_proxy(master, loop, thread)
             httpd.shutdown()
