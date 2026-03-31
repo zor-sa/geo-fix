@@ -232,45 +232,31 @@
 
     // === 4. WebRTC Leak Prevention ===
 
-    // Wrap RTCPeerConnection to block STUN server discovery
+    // Force relay mode: STUN requests are not made, IP is not leaked,
+    // but calls still work via TURN relay (slightly higher latency).
     var OrigRTCPeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
 
     if (OrigRTCPeerConnection) {
-        var blockedStunPattern = /^stun:|^turn:/i;
-
-        function FilteredRTCPeerConnection(config, constraints) {
-            // Remove or neutralize STUN/TURN servers from ICE configuration
-            if (config && config.iceServers) {
-                config = JSON.parse(JSON.stringify(config)); // deep clone
-                config.iceServers = config.iceServers.filter(function(server) {
-                    var urls = server.urls || server.url || [];
-                    if (typeof urls === 'string') urls = [urls];
-                    // Block any server with stun: or turn: URLs
-                    for (var i = 0; i < urls.length; i++) {
-                        if (blockedStunPattern.test(urls[i])) {
-                            return false;
-                        }
-                    }
-                    return true;
-                });
-            }
+        function RelayRTCPeerConnection(config, constraints) {
+            config = config ? JSON.parse(JSON.stringify(config)) : {};
+            config.iceTransportPolicy = 'relay';
             return new OrigRTCPeerConnection(config, constraints);
         }
 
-        FilteredRTCPeerConnection.prototype = OrigRTCPeerConnection.prototype;
-        FilteredRTCPeerConnection.generateCertificate = OrigRTCPeerConnection.generateCertificate;
+        RelayRTCPeerConnection.prototype = OrigRTCPeerConnection.prototype;
+        RelayRTCPeerConnection.generateCertificate = OrigRTCPeerConnection.generateCertificate;
 
-        disguiseFunction(FilteredRTCPeerConnection, 'RTCPeerConnection');
+        disguiseFunction(RelayRTCPeerConnection, 'RTCPeerConnection');
 
         stealthDefine(window, 'RTCPeerConnection', {
-            value: FilteredRTCPeerConnection,
+            value: RelayRTCPeerConnection,
             writable: false
         });
 
         // Also handle webkit prefix
         if (window.webkitRTCPeerConnection) {
             stealthDefine(window, 'webkitRTCPeerConnection', {
-                value: FilteredRTCPeerConnection,
+                value: RelayRTCPeerConnection,
                 writable: false
             });
         }

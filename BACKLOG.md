@@ -105,17 +105,11 @@
 
 ### WebRTC: relay-режим вместо полной блокировки STUN
 
-**Status:** ready — можно брать в работу
+**Status:** done — реализовано 2026-03-31
 **Source:** user feedback, 2026-03-31
 **Related:** inject.js (RTCPeerConnection override)
 
-**Problem:** Текущая реализация полностью фильтрует STUN/TURN серверы из RTCPeerConnection, что ломает звонки (Google Meet, Zoom web, Teams web, Discord), видеочаты и WebRTC-стриминг. При этом если VPN работает, STUN покажет IP VPN-сервера — утечка актуальна только при плохо настроенном VPN.
-
-**Требование:**
-1. Заменить полную блокировку STUN на `iceTransportPolicy: 'relay'` — форсировать relay-режим в RTCPeerConnection config. STUN-запрос не делается, IP не утекает, звонки работают через TURN relay (чуть выше задержка, обычно 10-50мс).
-2. Сделать WebRTC защиту опциональной/отключаемой для пользователя.
-
-**Scope:** Изменить JS override RTCPeerConnection в inject.js: вместо фильтрации iceServers — установить `config.iceTransportPolicy = 'relay'`. Убрать netsh firewall rules для STUN портов (или сделать опциональными). Добавить настройку для отключения WebRTC защиты.
+**Solution:** Заменена фильтрация STUN/TURN серверов на `iceTransportPolicy: 'relay'`. Звонки (Google Meet, Zoom, Teams, Discord) теперь работают через TURN relay. Убрано создание файрвольных правил при старте (legacy правила удаляются при cleanup). Wizard упрощён — шаг файрвола удалён.
 
 ---
 

@@ -41,7 +41,6 @@ from src.system_config import (
     ProxyState,
     check_pending_cleanup,
     cleanup,
-    create_firewall_rules,
     create_session_tmpdir,
     delete_ca_key_files,
     delete_ca_public_cert,
@@ -50,6 +49,7 @@ from src.system_config import (
     disable_location_services,
     install_ca_cert,
     load_state,
+    remove_firewall_rules,
     restore_location_services,
     save_state,
     set_firefox_proxy,
@@ -612,9 +612,9 @@ def main():
     state.firefox_prefs_backup = firefox_backup
     save_state(state)
 
-    # Create firewall rules (every session, not just wizard)
-    create_firewall_rules()
-    save_state(state)
+    # Remove legacy STUN firewall rules from previous versions (if any)
+    # WebRTC protection now uses iceTransportPolicy='relay' instead
+    remove_firewall_rules()
 
     # Disable Location Services and store original value for cleanup
     original_location_services = disable_location_services()

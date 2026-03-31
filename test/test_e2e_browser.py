@@ -107,15 +107,15 @@ def test_geolocation(browser_page):
     assert abs(coords["lon"] - (-77.0364)) < 0.01, f"Lon wrong: {coords}"
 
 
-def test_webrtc_stun_filtered(browser_page):
-    count = browser_page.evaluate("""(() => {
+def test_webrtc_relay_mode(browser_page):
+    policy = browser_page.evaluate("""(() => {
         try {
             const pc = new RTCPeerConnection({
                 iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
             });
-            const n = pc.getConfiguration().iceServers.length;
+            const p = pc.getConfiguration().iceTransportPolicy;
             pc.close();
-            return n;
-        } catch(e) { return -1; }
+            return p;
+        } catch(e) { return 'error: ' + e.message; }
     })()""")
-    assert count == 0, f"STUN servers not filtered: {count}"
+    assert policy == "relay", f"iceTransportPolicy should be 'relay', got: {policy}"

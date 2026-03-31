@@ -1,4 +1,4 @@
-"""Tests for setup wizard fixes (Task 10: security-hardening)."""
+"""Tests for setup wizard (simplified — no firewall step)."""
 
 import sys
 from pathlib import Path
@@ -10,45 +10,32 @@ from src.setup_wizard import _run_console_wizard, mark_setup_complete, SETUP_COM
 
 
 class TestConsoleWizard:
-    def test_prompts_firewall(self, monkeypatch, capsys, tmp_path):
+    def test_shows_cert_info(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr("src.setup_wizard.SETUP_COMPLETE_FILE", tmp_path / ".done")
-        monkeypatch.setattr("builtins.input", lambda _: "n")
         _run_console_wizard()
         output = capsys.readouterr().out
-        assert "файрвол" in output.lower() or "Файрвол" in output
-
-    def test_installs_firewall_on_yes(self, monkeypatch, capsys, tmp_path):
-        monkeypatch.setattr("src.setup_wizard.SETUP_COMPLETE_FILE", tmp_path / ".done")
-        monkeypatch.setattr("builtins.input", lambda _: "y")
-        with patch("src.setup_wizard.create_firewall_rules", return_value=True) as mock_fw:
-            _run_console_wizard()
-            mock_fw.assert_called_once()
-
-    def test_skips_firewall_on_no(self, monkeypatch, capsys, tmp_path):
-        monkeypatch.setattr("src.setup_wizard.SETUP_COMPLETE_FILE", tmp_path / ".done")
-        monkeypatch.setattr("builtins.input", lambda _: "n")
-        with patch("src.setup_wizard.create_firewall_rules") as mock_fw:
-            _run_console_wizard()
-            mock_fw.assert_not_called()
+        assert "сертификат" in output.lower()
 
     def test_shows_dns_instructions(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr("src.setup_wizard.SETUP_COMPLETE_FILE", tmp_path / ".done")
-        monkeypatch.setattr("builtins.input", lambda _: "n")
         _run_console_wizard()
         output = capsys.readouterr().out
         assert "chrome://settings/security" in output
         assert "about:preferences#privacy" in output
 
-    def test_all_three_steps_present(self, monkeypatch, capsys, tmp_path):
+    def test_both_steps_present(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr("src.setup_wizard.SETUP_COMPLETE_FILE", tmp_path / ".done")
-        prompts = []
-        monkeypatch.setattr("builtins.input", lambda p: (prompts.append(p), "n")[1])
         _run_console_wizard()
         output = capsys.readouterr().out
-        all_text = output + " ".join(prompts)
-        assert "Шаг 1" in all_text
-        assert "Шаг 2" in all_text
-        assert "Шаг 3" in all_text
+        assert "Шаг 1" in output
+        assert "Шаг 2" in output
+
+    def test_no_firewall_step(self, monkeypatch, capsys, tmp_path):
+        """Wizard should not mention firewall — WebRTC uses relay mode now."""
+        monkeypatch.setattr("src.setup_wizard.SETUP_COMPLETE_FILE", tmp_path / ".done")
+        _run_console_wizard()
+        output = capsys.readouterr().out
+        assert "файрвол" not in output.lower()
 
 
 class TestWizardNoDirectCaInstall:
@@ -62,7 +49,6 @@ class TestWizardNoDirectCaInstall:
         """Skip button should not be a lambda with mark_setup_complete."""
         source = Path(__file__).parent.parent.parent / "src" / "setup_wizard.py"
         content = source.read_text(encoding="utf-8")
-        # Verify no lambda that calls mark_setup_complete (old pattern)
         for line in content.split("\n"):
             if "lambda" in line and "mark_setup_complete" in line:
                 pytest.fail(f"Found lambda with mark_setup_complete: {line.strip()}")

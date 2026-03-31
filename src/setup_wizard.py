@@ -1,7 +1,6 @@
 """First-run setup wizard for geo-fix.
 
-Guides the user through: CA certificate installation, Firefox configuration,
-optional firewall rules, and DNS setup instructions.
+Guides the user through: CA certificate info and DNS setup instructions.
 Uses tkinter for native Windows dialogs.
 """
 
@@ -12,8 +11,6 @@ import sys
 import webbrowser
 from pathlib import Path
 from typing import Optional
-
-from .system_config import create_firewall_rules
 
 logger = logging.getLogger("geo-fix.wizard")
 
@@ -64,7 +61,7 @@ def _run_gui_wizard() -> bool:
     y = (root.winfo_screenheight() - 400) // 2
     root.geometry(f"+{x}+{y}")
 
-    success = {"cert": False, "firewall": False, "all": False}
+    success = {"cert": False, "all": False}
     current_step = {"value": 0}
 
     # Title
@@ -84,7 +81,7 @@ def _run_gui_wizard() -> bool:
     # Step 1: Certificate info (actual install happens per-session in main.py)
     def step_cert():
         update_status(
-            "Шаг 1/3: Сертификат безопасности\n\n"
+            "Шаг 1/2: Сертификат безопасности\n\n"
             "geo-fix автоматически создаёт временный сертификат при "
             "каждом запуске. Сертификат работает только на вашем "
             "компьютере и удаляется при остановке.\n\n"
@@ -93,30 +90,10 @@ def _run_gui_wizard() -> bool:
         )
         success["cert"] = True
 
-    # Step 2: Firewall (optional)
-    def step_firewall():
-        result = messagebox.askyesno(
-            "Шаг 2/3: Защита от WebRTC-утечек",
-            "Хотите установить правила файрвола для максимальной "
-            "защиты от утечки IP через WebRTC?\n\n"
-            "Это потребует права администратора (появится запрос UAC).\n\n"
-            "Без этого базовая защита всё равно работает, но менее надёжна.\n\n"
-            "Установить правила файрвола?",
-        )
-        if result:
-            if create_firewall_rules():
-                success["firewall"] = True
-                update_status("✓ Правила файрвола установлены.")
-            else:
-                update_status("⚠ Не удалось установить правила файрвола.\n"
-                             "Базовая защита WebRTC всё равно работает.")
-        else:
-            update_status("Правила файрвола пропущены. Базовая защита WebRTC активна.")
-
-    # Step 3: DNS
+    # Step 2: DNS
     def step_dns():
         update_status(
-            "Шаг 3/3: Настройка DNS\n\n"
+            "Шаг 2/2: Настройка DNS\n\n"
             "Для защиты от утечки DNS включите «Безопасный DNS» в настройках браузера.\n\n"
             "Chrome/Edge: Настройки → Конфиденциальность → Безопасность → Безопасный DNS → Включить\n\n"
             "Firefox: Настройки → Конфиденциальность → DNS через HTTPS → Включить"
@@ -137,8 +114,6 @@ def _run_gui_wizard() -> bool:
         if step == 0:
             step_cert()
         elif step == 1:
-            step_firewall()
-        elif step == 2:
             step_dns()
 
             # Add browser buttons
@@ -148,14 +123,14 @@ def _run_gui_wizard() -> bool:
                      command=open_chrome_security).pack(side="left", padx=5)
             tk.Button(browser_frame, text="Открыть настройки Firefox",
                      command=open_firefox_security).pack(side="left", padx=5)
-        elif step == 3:
+        elif step == 2:
             mark_setup_complete()
             success["all"] = True
             root.destroy()
             return
 
         current_step["value"] += 1
-        if current_step["value"] >= 4:
+        if current_step["value"] >= 3:
             next_btn.config(text="Готово")
 
     next_btn = tk.Button(btn_frame, text="Далее →", command=next_step, width=15)
@@ -164,9 +139,7 @@ def _run_gui_wizard() -> bool:
     def handle_skip():
         confirmed = messagebox.askokcancel(
             "Пропустить настройку?",
-            "При пропуске не будут установлены правила файрвола "
-            "(дополнительная WebRTC-защита) и вы не увидите инструкции "
-            "по настройке DNS.\n\n"
+            "При пропуске вы не увидите инструкции по настройке DNS.\n\n"
             "Базовая функциональность geo-fix будет работать.\n\n"
             "Пропустить?"
         )
@@ -198,16 +171,7 @@ def _run_console_wizard() -> bool:
     print("  geo-fix автоматически создаёт временный сертификат при каждом запуске.")
     print("  Сертификат удаляется при остановке.")
 
-    answer = input("\nШаг 2: Установить правила файрвола для WebRTC-защиты? (требует права администратора) [y/N]: ")
-    if answer.strip().lower() == "y":
-        if create_firewall_rules():
-            print("  ✓ Правила файрвола установлены")
-        else:
-            print("  ⚠ Не удалось установить правила файрвола. Базовая защита активна.")
-    else:
-        print("  Файрвол пропущен. Базовая защита WebRTC активна.")
-
-    print("\nШаг 3: Настройте «Безопасный DNS» в браузере:")
+    print("\nШаг 2: Настройте «Безопасный DNS» в браузере:")
     print("  Chrome: chrome://settings/security → Безопасный DNS → Включить")
     print("  Firefox: about:preferences#privacy → DNS через HTTPS → Включить")
 
