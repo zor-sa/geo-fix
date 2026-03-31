@@ -80,3 +80,46 @@ jobs:
           name: benchmark-results
           path: benchmark_results.json
           retention-days: 90
+
+  build-exe:
+    runs-on: windows-latest
+    needs: [e2e-browser-tests, resource-benchmarks]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build exe
+        run: |
+          pyinstaller --onedir --name geo-fix --noconfirm --clean --add-data "src/inject.js;src" --hidden-import mitmproxy.addons --hidden-import mitmproxy.tools.dump --hidden-import pystray._win32 src/main.py
+      - name: Copy install.bat and README
+        run: |
+          copy install.bat dist\geo-fix\
+          copy README.md dist\geo-fix\
+      - name: Create desktop shortcut scripts
+        shell: powershell
+        run: |
+          $distDir = "dist\geo-fix"
+          @("US", "DE", "NL", "GB") | ForEach-Object {
+            $content = "@echo off`r`nstart """" ""%~dp0geo-fix.exe"" $_"
+            Set-Content -Path "$distDir\Включить ($_).bat" -Value $content -Encoding UTF8
+          }
+          $stopContent = "@echo off`r`nstart """" ""%~dp0geo-fix.exe"" --stop"
+          Set-Content -Path "$distDir\Выключить.bat" -Value $stopContent -Encoding UTF8
+          $cleanupContent = "@echo off`r`nstart """" ""%~dp0geo-fix.exe"" --cleanup"
+          Set-Content -Path "$distDir\Починить интернет.bat" -Value $cleanupContent -Encoding UTF8
+      - name: Create zip archive
+        shell: powershell
+        run: |
+          Compress-Archive -Path "dist\geo-fix\*" -DestinationPath "dist\geo-fix-windows.zip"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: geo-fix-windows
+          path: dist/geo-fix-windows.zip
+          retention-days: 30
