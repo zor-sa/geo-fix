@@ -104,3 +104,40 @@
 **Требование:** Инжектировать полный payload на все домены по умолчанию. Убрать двухуровневую схему — одинаковая маскировка везде.
 
 **Scope:** Изменить `response()` в proxy_addon.py: на не-целевых доменах инжектировать полный payload вместо geo-only. Убрать `_build_geo_only_payload()`. Обновить тесты. Архитектурно предусмотреть, что в перспективе дадим пользователю настраивать исключения (домены без маскировки).
+
+---
+
+### WebRTC: relay-режим вместо полной блокировки STUN
+
+**Status:** ready — можно брать в работу
+**Source:** user feedback, 2026-03-31
+**Related:** inject.js (RTCPeerConnection override)
+
+**Problem:** Текущая реализация полностью фильтрует STUN/TURN серверы из RTCPeerConnection, что ломает звонки (Google Meet, Zoom web, Teams web, Discord), видеочаты и WebRTC-стриминг. При этом если VPN работает, STUN покажет IP VPN-сервера — утечка актуальна только при плохо настроенном VPN.
+
+**Требование:**
+1. Заменить полную блокировку STUN на `iceTransportPolicy: 'relay'` — форсировать relay-режим в RTCPeerConnection config. STUN-запрос не делается, IP не утекает, звонки работают через TURN relay (чуть выше задержка, обычно 10-50мс).
+2. Сделать WebRTC защиту опциональной/отключаемой для пользователя.
+
+**Scope:** Изменить JS override RTCPeerConnection в inject.js: вместо фильтрации iceServers — установить `config.iceTransportPolicy = 'relay'`. Убрать netsh firewall rules для STUN портов (или сделать опциональными). Добавить настройку для отключения WebRTC защиты.
+
+---
+
+### Фильтрация ICE candidates для защиты от утечки IP
+
+**Status:** idea — requires user approval
+**Source:** обсуждение альтернатив WebRTC защиты, 2026-03-31
+**Related:** inject.js (RTCPeerConnection override)
+
+**Problem:** `iceTransportPolicy: 'relay'` запрещает прямые P2P соединения, направляя весь трафик через relay (задержка). Альтернатива — позволить STUN отработать, но перехватить `onicecandidate` и отфильтровать candidates с реальным IP, пропуская VPN IP, mDNS (.local) и relay candidates.
+
+**Плюсы:**
+- Сохраняет прямые P2P соединения через VPN-интерфейс (минимальная задержка)
+- Relay используется только как fallback
+
+**Минусы:**
+- Нужно передавать VPN IP в inject.js и динамически актуализировать при смене IP
+- Хрупкая реализация: split-tunneling VPN, symmetric NAT, `getStats()` — дополнительные векторы утечки
+- Сложнее тестировать
+
+**Decision:** Рассмотреть после реализации relay-подхода, если задержка через relay окажется проблемой на практике.
