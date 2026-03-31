@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, PropertyMock
 import pytest
 
 from src.presets import PRESETS, CountryPreset
-from src.proxy_addon import GeoFixAddon, FlowCleanup, _find_inject_position, _build_js_payload, _build_geo_only_payload, _generate_nonce, _modify_csp, _has_restrictive_csp
+from src.proxy_addon import GeoFixAddon, FlowCleanup, _find_inject_position, _build_js_payload, _generate_nonce, _modify_csp, _has_restrictive_csp
 
 
 class TestFindInjectPosition:
@@ -171,12 +171,12 @@ class TestGeoFixAddon:
         assert "<script nonce=" in flow.response.text
         assert "getTimezoneOffset" in flow.response.text
 
-    def test_response_skips_non_target_domain(self, addon, make_flow):
-        """Non-target domains now get geo-only injection (has getCurrentPosition, no getTimezoneOffset)."""
+    def test_response_injects_full_payload_on_non_target_domain(self, addon, make_flow):
+        """Non-target domains get full payload (same as target domains)."""
         flow = make_flow(host="example.com")
         addon.response(flow)
         assert "getCurrentPosition" in flow.response.text
-        assert "getTimezoneOffset" not in flow.response.text
+        assert "getTimezoneOffset" in flow.response.text
 
     def test_response_skips_non_html(self, addon, make_flow):
         flow = make_flow(content_type="application/json", body='{"key": "value"}')
@@ -285,41 +285,40 @@ class TestGeoFixAddon:
 
     # --- Response injection tests ---
 
-    def test_response_injects_geo_only_on_non_target_domain(self, addon, make_flow):
-        """Non-target HTML → has getCurrentPosition, no getTimezoneOffset."""
-        flow = make_flow(host="example.com")
-        addon.response(flow)
-        assert "getCurrentPosition" in flow.response.text
-        assert "getTimezoneOffset" not in flow.response.text
-
-    def test_response_injects_full_payload_on_target_domain(self, addon, make_flow):
-        """Target domain → still has getTimezoneOffset (regression check)."""
-        flow = make_flow(host="www.google.com")
-        addon.response(flow)
-        assert "getTimezoneOffset" in flow.response.text
+    def test_response_injects_full_payload_on_any_domain(self, addon, make_flow):
+        """Both target and non-target domains get full payload."""
+        for host in ["www.google.com", "example.com", "random-site.org"]:
+            flow = make_flow(host=host)
+            addon.response(flow)
+            assert "getTimezoneOffset" in flow.response.text
+            assert "getCurrentPosition" in flow.response.text
 
     def test_response_skips_injection_on_script_src_none_csp(self, addon, make_flow):
-        """script-src 'none' CSP on non-target → skip injection entirely."""
-        flow = make_flow(host="example.com")
-        flow.response.headers["content-security-policy"] = "script-src 'none'"
-        original_text = flow.response.text
-        addon.response(flow)
-        assert flow.response.text == original_text
+        """script-src 'none' CSP → skip injection on any domain."""
+        for host in ["example.com", "www.google.com"]:
+            flow = make_flow(host=host)
+            flow.response.headers["content-security-policy"] = "script-src 'none'"
+            original_text = flow.response.text
+            addon.response(flow)
+            assert flow.response.text == original_text
 
     def test_response_skips_injection_on_require_trusted_types_csp(self, addon, make_flow):
-        """require-trusted-types-for 'script' CSP on non-target → skip injection."""
-        flow = make_flow(host="example.com")
-        flow.response.headers["content-security-policy"] = "require-trusted-types-for 'script'"
-        original_text = flow.response.text
-        addon.response(flow)
-        assert flow.response.text == original_text
+        """require-trusted-types-for 'script' CSP → skip injection on any domain."""
+        for host in ["example.com", "www.google.com"]:
+            flow = make_flow(host=host)
+            flow.response.headers["content-security-policy"] = "require-trusted-types-for 'script'"
+            original_text = flow.response.text
+            addon.response(flow)
+            assert flow.response.text == original_text
 
-    def test_response_injects_on_normal_csp_non_target(self, addon, make_flow):
-        """Normal CSP on non-target → geo-only injection proceeds."""
-        flow = make_flow(host="example.com")
-        flow.response.headers["content-security-policy"] = "default-src 'self'"
-        addon.response(flow)
-        assert "getCurrentPosition" in flow.response.text
+    def test_response_injects_on_normal_csp(self, addon, make_flow):
+        """Normal CSP → full injection proceeds on any domain."""
+        for host in ["example.com", "www.google.com"]:
+            flow = make_flow(host=host)
+            flow.response.headers["content-security-policy"] = "default-src 'self'"
+            addon.response(flow)
+            assert "getCurrentPosition" in flow.response.text
+            assert "getTimezoneOffset" in flow.response.text
 
 
 class TestHasRestrictiveCSP:
@@ -537,50 +536,3 @@ class TestAcceptLanguageAllDomains:
         assert flow.request.headers["Accept-Language"] == "en-US,en;q=0.9"
 
 
-class TestGeoOnlyPayloadContent:
-    """Verify geo-only payload contains geolocation + permissions overrides, not other overrides."""
-
-    def test_geo_only_payload_contains_geolocation_override(self):
-        preset = PRESETS["US"]
-        payload = _build_geo_only_payload(preset)
-        assert "getCurrentPosition" in payload
-        assert "watchPosition" in payload
-        assert "clearWatch" in payload
-
-    def test_geo_only_payload_contains_permissions_query_override(self):
-        preset = PRESETS["US"]
-        payload = _build_geo_only_payload(preset)
-        assert "permissions" in payload
-        assert "geolocation" in payload
-        assert "granted" in payload
-
-    def test_geo_only_payload_scopes_permissions_to_geolocation(self):
-        """permissions.query override must check name === 'geolocation' before returning granted."""
-        preset = PRESETS["US"]
-        payload = _build_geo_only_payload(preset)
-        # The guard must exist: only geolocation gets the fake response
-        assert "name" in payload
-        assert "'geolocation'" in payload or '"geolocation"' in payload
-
-    def test_geo_only_payload_excludes_timezone(self):
-        preset = PRESETS["US"]
-        payload = _build_geo_only_payload(preset)
-        assert "getTimezoneOffset" not in payload
-        assert "DateTimeFormat" not in payload
-
-    def test_geo_only_payload_excludes_language(self):
-        preset = PRESETS["US"]
-        payload = _build_geo_only_payload(preset)
-        assert "navigator.language" not in payload
-        assert "GF_LANG" not in payload
-
-    def test_geo_only_payload_excludes_webrtc(self):
-        preset = PRESETS["US"]
-        payload = _build_geo_only_payload(preset)
-        assert "RTCPeerConnection" not in payload
-
-    def test_geo_only_payload_contains_preset_coordinates(self):
-        preset = PRESETS["US"]
-        payload = _build_geo_only_payload(preset)
-        assert str(preset.latitude) in payload
-        assert str(preset.longitude) in payload

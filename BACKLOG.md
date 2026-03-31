@@ -95,15 +95,11 @@
 
 ### Полная маскировка на все домены по умолчанию
 
-**Status:** ready — можно брать в работу
+**Status:** done — реализовано 2026-03-31
 **Source:** user feedback, 2026-03-31
-**Related:** proxy_addon.py (two-tier injection), inject.js
+**Related:** proxy_addon.py
 
-**Problem:** Сейчас полный payload (timezone, language, WebRTC, geolocation, permissions) инжектится только на TARGET_DOMAINS (Google). На остальных доменах — только geolocation + permissions. Если сайт проверяет timezone или language, он увидит реальные значения и может определить настоящее местоположение пользователя.
-
-**Требование:** Инжектировать полный payload на все домены по умолчанию. Убрать двухуровневую схему — одинаковая маскировка везде.
-
-**Scope:** Изменить `response()` в proxy_addon.py: на не-целевых доменах инжектировать полный payload вместо geo-only. Убрать `_build_geo_only_payload()`. Обновить тесты. Архитектурно предусмотреть, что в перспективе дадим пользователю настраивать исключения (домены без маскировки).
+**Solution:** Убрана двухуровневая схема инжекции. Полный payload (timezone, language, geolocation, permissions, WebRTC) инжектится на все домены. `_build_geo_only_payload()` удалена. Restrictive CSP проверяется для всех доменов (включая target).
 
 ---
 
