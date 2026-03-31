@@ -19,15 +19,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
-      - name: Run unit tests
+      - name: Run all unit tests
         run: |
-          python -m pytest test/test_presets.py test/test_proxy_addon.py test/test_system_config.py test/test_health_check.py test/test_main.py -v --tb=short
-      - name: Run security-hardening unit tests
-        run: |
-          python -m pytest test/test_ca_lifecycle.py test/test_cleanup_paths.py test/test_firefox_backup.py test/test_port_selection.py test/test_watchdog.py test/test_ca_key_deletion.py test/test_r2_fixes.py test/unit/ -v --tb=short
-      - name: Run resource-optimization unit tests
-        run: |
-          python -m pytest test/test_master_setup.py test/test_ram_monitor.py -v --tb=short
+          python -m pytest test/ -v --tb=short --ignore=test/test_integration_proxy.py --ignore=test/test_integration_windows.py --ignore=test/test_integration_security.py --ignore=test/test_integration_ca_key_deletion.py --ignore=test/test_e2e_browser.py --ignore=test/test_e2e_security.py --ignore=test/test_resource_benchmark.py
 
   integration-tests:
     runs-on: windows-latest
@@ -42,10 +36,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
-      - name: Run integration tests
-        run: python -m pytest test/test_integration_windows.py test/test_integration_security.py -v --tb=short
-      - name: Run resource-optimization integration tests
-        run: python -m pytest test/test_integration_proxy.py -v --tb=short -x
+      - name: Run all integration tests
+        run: python -m pytest test/test_integration_windows.py test/test_integration_security.py test/test_integration_ca_key_deletion.py test/test_integration_proxy.py -v --tb=short -x
       - name: Run E2E security lifecycle tests
         run: python -m pytest test/test_e2e_security.py -v --tb=short -x
 
