@@ -74,22 +74,18 @@
 
 ### Гарантированная очистка системных изменений при любом завершении
 
-**Status:** ready — можно брать в работу
+**Status:** done — архитектура уже реализована, добавлен SetConsoleCtrlHandler (2026-03-31)
 **Source:** user feedback, 2026-03-30
-**Related:** security-hardening-r2 (R-4), system_config.py
+**Related:** security-hardening-r2 (R-4), system_config.py, watchdog.py
 
-**Problem:** Если geo-fix завершился аварийно (краш, убит через диспетчер задач, BSOD, отключение электричества), системные изменения остаются: прокси включён (интернет не работает), CA-сертификат в хранилище (угроза безопасности), правила файрвола (ломают видеозвонки). Пользователь не может и не должен разбираться в ручной очистке.
+**Реализованная архитектура (4 слоя):**
+1. **atexit + SIGTERM** — нормальный выход и Ctrl+C
+2. **SetConsoleCtrlHandler** (добавлен) — закрытие консоли, logoff, shutdown
+3. **Watchdog process** — отдельный процесс, обнаруживает kill через Task Manager за 2 сек
+4. **ONLOGON scheduled task** — cleanup при следующем входе (BSOD, power loss)
++ startup dirty-flag check (`cleanup_pending.json`)
 
-**Требование:** Очистка должна работать в 100% случаев. Нельзя рассчитывать, что пользователь будет делать очистку вручную или сможет в этом разобраться.
-
-**Scope исследования:**
-1. Windows shutdown hooks — гарантированный вызов cleanup при logoff/shutdown/restart
-2. Windows Service подход — сервис получает уведомления о завершении сессии
-3. Watchdog как отдельный процесс — следит за основным, делает cleanup если тот умер
-4. Startup task (Task Scheduler) — при входе в систему проверяет и чистит артефакты
-5. Persistence через реестр Run/RunOnce — запуск очистки при следующем логине
-
-**Decision:** Требуется code-research для выбора наиболее надёжного подхода.
+**Покрытие:** все сценарии кроме power loss до flush ONLOGON task на диск (неизбежное ограничение user-space).
 
 ---
 

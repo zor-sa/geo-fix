@@ -542,6 +542,19 @@ def main():
     atexit.register(_do_cleanup)
     signal.signal(signal.SIGTERM, lambda sig, frame: (_do_cleanup(), sys.exit(0)))
 
+    # On Windows, catch console close/logoff/shutdown events via SetConsoleCtrlHandler.
+    # These events are not caught by atexit or signal handlers.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            def _console_ctrl_handler(ctrl_type):
+                _do_cleanup()
+                return False  # let default handler terminate process
+            _handler_func = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong)(_console_ctrl_handler)
+            ctypes.windll.kernel32.SetConsoleCtrlHandler(_handler_func, True)
+        except Exception as e:
+            logger.warning("Could not set console ctrl handler: %s", e)
+
     # VPN check
     vpn = check_vpn_status()
     if vpn == VpnStatus.NOT_DETECTED:
